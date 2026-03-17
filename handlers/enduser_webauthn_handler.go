@@ -1,0 +1,1091 @@
+package handlers
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/google/uuid"
+	"github.com/lib/pq"
+	"gorm.io/gorm"
+
+	"github.com/authsec-ai/authsec/config"
+	session "github.com/authsec-ai/authsec/internal/session"
+	middleware "github.com/authsec-ai/authsec/middlewares"
+	repositories "github.com/authsec-ai/authsec/repository"
+	sharedmodels "github.com/authsec-ai/sharedmodels"
+)
+
+// EndUserWebAuthnHandler handles WebAuthn operations for end users
+// Uses tenant-specific databases for all operations
+type EndUserWebAuthnHandler struct {
+	WebAuthn       *webauthn.WebAuthn
+	SessionManager SessionManagerInterface // Deprecated: not used, kept for backward compatibility
+	RPDisplayName  string
+	RPID           string
+	RPOrigins      []string
+}
+
+// resolveDB provides database connection for end-user operations (tenant-specific)
+func (h *EndUserWebAuthnHandler) resolveDB(tenantID string) (*gorm.DB, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant id is required")
+	}
+
+	// Allow direct DB name usage (e.g., tenant_<uuid>) to support legacy callers
+	if strings.HasPrefix(tenantID, "tenant_") {
+		return config.ConnectTenantDB(tenantID)
+	}
+
+	globalDB, err := config.ConnectGlobalDB()
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to global DB: %w", err)
+	}
+
+	globalRepo := repositories.NewGlobalRepository(globalDB)
+	tenant, err := globalRepo.GetTenantByID(tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve tenant %s: %w", tenantID, err)
+	}
+
+	if tenant.TenantDB == "" {
+		return nil, fmt.Errorf("tenant %s does not have a configured database name", tenantID)
+	}
+
+	return config.ConnectTenantDB(tenant.TenantDB)
+}
+
+// getTenantSessionManager creates a tenant-specific session manager
+func (h *EndUserWebAuthnHandler) getTenantSessionManager(tenantID string) (SessionManagerInterface, error) {
+	tenantDB, err := h.resolveDB(tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to tenant DB: %w", err)
+	}
+
+	pgSessionManager := session.NewPostgreSQLSessionManager(tenantDB, "")
+	return NewSessionManagerAdapter(pgSessionManager), nil
+}
+
+// validateOriginAndCreateWebAuthn validates the origin and creates a WebAuthn instance for end-user operations
+func (h *EndUserWebAuthnHandler) validateOriginAndCreateWebAuthn(c *gin.Context) (*webauthn.WebAuthn, error) {
+	// Get the origin from the request
+	requestOrigin := c.Request.Header.Get("Origin")
+	log.Printf("EndUserWebAuthn validateOrigin: Request origin=%s", requestOrigin)
+
+	// Check for custom domain FIRST before standard validation
+	// This prevents custom domains from being overridden by standard validation
+	originURL, err := url.Parse(requestOrigin)
+	if err == nil && originURL.Scheme == "https" {
+		domain := originURL.Host
+
+		// Check if this domain is a verified custom domain in the database
+		globalDB, err := config.ConnectGlobalDB()
+		if err == nil {
+			var count int64
+			err := globalDB.Table("tenant_domains").
+				Where("domain = ? AND is_verified = true", domain).
+				Count(&count).Error
+
+			if err == nil && count > 0 {
+				log.Printf("EndUserWebAuthn validateOrigin: Verified custom domain: %s", domain)
+				dynamicWebAuthn := config.SetupWebAuthn(
+					"AuthSec MFA Service",
+					domain, // Use custom domain as RP ID
+					requestOrigin,
+				)
+				return dynamicWebAuthn, nil
+			}
+			log.Printf("EndUserWebAuthn validateOrigin: Domain %s not found in tenant_domains or not verified", domain)
+		} else {
+			log.Printf("EndUserWebAuthn validateOrigin: Failed to connect to global DB: %v", err)
+		}
+	}
+
+	// Second, try standard subdomain validation
+	if config.ValidateSubdomainOrigin(requestOrigin) {
+		log.Printf("EndUserWebAuthn validateOrigin: Creating dynamic WebAuthn for valid origin %s", requestOrigin)
+
+		dynamicWebAuthn := config.SetupWebAuthn(
+			"AuthSec MFA Service",
+			"app.authsec.dev",
+			requestOrigin, // Use the actual request origin
+		)
+		return dynamicWebAuthn, nil
+	}
+
+	// Origin validation failed
+	log.Printf("EndUserWebAuthn validateOrigin: Origin validation failed for %s", requestOrigin)
+	return nil, fmt.Errorf("invalid origin: %s not allowed", requestOrigin)
+}
+
+// GetMFAStatus returns the MFA status for end users
+func (h *EndUserWebAuthnHandler) GetMFAStatus(c *gin.Context) {
+	var req struct {
+		TenantID string  `json:"tenant_id" binding:"required"`
+		Email    string  `json:"email" binding:"required"`
+		ClientID *string `json:"client_id"` // Optional
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "tenant_id and email are required"})
+		return
+	}
+
+	tenantDB, err := h.resolveDB(req.TenantID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "db connect failed"})
+		return
+	}
+
+	// Get end user by email and tenant
+	clientRepo := repositories.NewClientRepository(tenantDB)
+	user, err := clientRepo.GetClientByEmailAndTenant(&req.Email, &req.TenantID, nil)
+	if err != nil {
+		c.JSON(http.StatusNotFound, ErrorResponse{Error: "user not found"})
+		return
+	}
+
+	if !user.MFAEnabled {
+		c.JSON(http.StatusOK, gin.H{"mfa_required": false})
+		return
+	}
+
+	mfaRepo := repositories.NewMFARepository(tenantDB)
+	methods, _ := mfaRepo.GetUserMethods(user.ID.String())
+
+	c.JSON(http.StatusOK, gin.H{
+		"mfa_required": true,
+		"methods":      methods,
+	})
+}
+
+// GetMFAStatusForLogin returns MFA status for end-user login flow
+func (h *EndUserWebAuthnHandler) GetMFAStatusForLogin(c *gin.Context) {
+	var req struct {
+		TenantID string `json:"tenant_id" binding:"required"`
+		Email    string `json:"email" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "tenant_id and email are required"})
+		return
+	}
+
+	tenantDB, err := h.resolveDB(req.TenantID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "db connect failed"})
+		return
+	}
+
+	// Get end user by email and tenant
+	clientRepo := repositories.NewClientRepository(tenantDB)
+	user, err := clientRepo.GetClientByEmailAndTenant(&req.Email, &req.TenantID, nil)
+	if err != nil {
+		c.JSON(http.StatusNotFound, ErrorResponse{Error: "user not found"})
+		return
+	}
+
+	if !user.MFAEnabled {
+		c.JSON(http.StatusOK, gin.H{"mfa_required": false})
+		return
+	}
+
+	mfaRepo := repositories.NewMFARepository(tenantDB)
+	methods, _ := mfaRepo.GetUserMethods(user.ID.String())
+
+	// Check for verified custom domain
+	globalDB, err := config.ConnectGlobalDB()
+	if err != nil {
+		log.Printf("GetMFAStatusForLogin: Failed to connect to global DB: %v", err)
+		// Continue without custom domain info
+		c.JSON(http.StatusOK, gin.H{
+			"mfa_required": true,
+			"methods":      methods,
+		})
+		return
+	}
+
+	globalRepo := repositories.NewGlobalRepository(globalDB)
+	customDomain, err := globalRepo.GetVerifiedCustomDomainForTenant(req.TenantID)
+	if err != nil {
+		log.Printf("GetMFAStatusForLogin: Error checking custom domain: %v", err)
+	}
+
+	response := gin.H{
+		"mfa_required": true,
+		"methods":      methods,
+	}
+
+	// If there's a verified custom domain, include it in the response
+	if customDomain != "" {
+		response["custom_domain"] = customDomain
+
+		// Check if user has WebAuthn as an MFA method
+		hasWebAuthnMethod := false
+		for _, method := range methods {
+			if method.MethodType == "webauthn" {
+				hasWebAuthnMethod = true
+				break
+			}
+		}
+
+		// Only check for custom domain credentials if user has WebAuthn configured
+		// If user has other MFA methods (TOTP, SMS, etc.), they don't need WebAuthn re-registration
+		if hasWebAuthnMethod {
+			// Check if user has credentials that are valid for this custom domain
+			// Strategy: Check if credentials were created for this specific RP ID
+			hasValidCreds, err := clientRepo.HasCredentialsForRPID(user.ID.String(), customDomain)
+			if err != nil {
+				log.Printf("GetMFAStatusForLogin: Error checking credentials for RP ID %s: %v", customDomain, err)
+			} else if hasValidCreds {
+				log.Printf("GetMFAStatusForLogin: User has credentials for custom domain RP ID: %s", customDomain)
+			} else {
+				log.Printf("GetMFAStatusForLogin: User has no credentials for custom domain RP ID: %s", customDomain)
+				// User has WebAuthn method but no credentials for this domain - needs re-registration
+				response["requires_registration"] = true
+				response["message"] = "WebAuthn credentials required for custom domain. Please complete registration."
+			}
+		} else {
+			// User doesn't have WebAuthn, they're using other MFA methods (TOTP, etc.)
+			// No re-registration needed for custom domain
+			log.Printf("GetMFAStatusForLogin: User has non-WebAuthn MFA methods, skipping custom domain credential check")
+		}
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// GetMFAStatusForLoginGET returns MFA status for end-user login via GET
+func (h *EndUserWebAuthnHandler) GetMFAStatusForLoginGET(c *gin.Context) {
+	tenantID := c.Query("tenant_id")
+	email := c.Query("email")
+
+	if tenantID == "" || email == "" {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "tenant_id and email query parameters are required"})
+		return
+	}
+
+	tenantDB, err := h.resolveDB(tenantID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "db connect failed"})
+		return
+	}
+
+	// Get end user by email and tenant
+	clientRepo := repositories.NewClientRepository(tenantDB)
+	user, err := clientRepo.GetClientByEmailAndTenant(&email, &tenantID, nil)
+	if err != nil {
+		c.JSON(http.StatusNotFound, ErrorResponse{Error: "user not found"})
+		return
+	}
+
+	if !user.MFAEnabled {
+		c.JSON(http.StatusOK, gin.H{"mfa_required": false})
+		return
+	}
+
+	mfaRepo := repositories.NewMFARepository(tenantDB)
+	methods, _ := mfaRepo.GetUserMethods(user.ID.String())
+
+	// Check for verified custom domain
+	globalDB, err := config.ConnectGlobalDB()
+	if err != nil {
+		log.Printf("GetMFAStatusForLoginGET: Failed to connect to global DB: %v", err)
+		// Continue without custom domain info
+		c.JSON(http.StatusOK, gin.H{
+			"mfa_required": true,
+			"methods":      methods,
+		})
+		return
+	}
+
+	globalRepo := repositories.NewGlobalRepository(globalDB)
+	customDomain, err := globalRepo.GetVerifiedCustomDomainForTenant(tenantID)
+	if err != nil {
+		log.Printf("GetMFAStatusForLoginGET: Error checking custom domain: %v", err)
+	}
+
+	response := gin.H{
+		"mfa_required": true,
+		"methods":      methods,
+	}
+
+	// If there's a verified custom domain, include it in the response
+	if customDomain != "" {
+		response["custom_domain"] = customDomain
+
+		// Check if user has WebAuthn as an MFA method
+		hasWebAuthnMethod := false
+		for _, method := range methods {
+			if method.MethodType == "webauthn" {
+				hasWebAuthnMethod = true
+				break
+			}
+		}
+
+		// Only check for custom domain credentials if user has WebAuthn configured
+		// If user has other MFA methods (TOTP, SMS, etc.), they don't need WebAuthn re-registration
+		if hasWebAuthnMethod {
+			// Check if user has credentials that are valid for this custom domain
+			// Strategy: Check if credentials were created for this specific RP ID
+			hasValidCreds, err := clientRepo.HasCredentialsForRPID(user.ID.String(), customDomain)
+			if err != nil {
+				log.Printf("GetMFAStatusForLoginGET: Error checking credentials for RP ID %s: %v", customDomain, err)
+			} else if hasValidCreds {
+				log.Printf("GetMFAStatusForLoginGET: User has credentials for custom domain RP ID: %s", customDomain)
+			} else {
+				log.Printf("GetMFAStatusForLoginGET: User has no credentials for custom domain RP ID: %s", customDomain)
+				// User has WebAuthn method but no credentials for this domain - needs re-registration
+				response["requires_registration"] = true
+				response["message"] = "WebAuthn credentials required for custom domain. Please complete registration."
+			}
+		} else {
+			// User doesn't have WebAuthn, they're using other MFA methods (TOTP, etc.)
+			// No re-registration needed for custom domain
+			log.Printf("GetMFAStatusForLoginGET: User has non-WebAuthn MFA methods, skipping custom domain credential check")
+		}
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// BeginRegistration starts WebAuthn registration for end users
+// @Summary      Begin WebAuthn Registration for End Users
+// @Description  Initiates WebAuthn credential registration for end users using tenant-specific database
+// @Tags         WebAuthn, EndUser
+// @Accept       json
+// @Produce      json
+// @Param        request body object{tenant_id=string,email=string} true "Registration initiation data"
+// @Success      200 {object} object{} "WebAuthn credential creation options"
+// @Failure      400 {object} ErrorResponse
+// @Failure      404 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /webauthn/enduser/beginRegistration [post]
+func (h *EndUserWebAuthnHandler) BeginRegistration(c *gin.Context) {
+	var req struct {
+		TenantID string `json:"tenant_id" binding:"required"`
+		Email    string `json:"email" binding:"required"`
+		ClientID string `json:"client_id" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "tenant_id, email, and client_id are required"})
+		return
+	}
+
+	tenantDB, err := h.resolveDB(req.TenantID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "db connect failed"})
+		return
+	}
+
+	// Get end user by email, tenant, and client_id
+	clientRepo := repositories.NewClientRepository(tenantDB)
+	user, err := clientRepo.GetClientByEmailTenantAndClient(req.Email, req.TenantID, req.ClientID)
+	if err != nil {
+		// User not found - create new user for first-time registration
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Printf("BeginRegistration: User not found, creating new user for email=%s, tenant=%s, client=%s", req.Email, req.TenantID, req.ClientID)
+
+			// Parse tenant_id and client_id as UUIDs
+			tenantUUID, err := uuid.Parse(req.TenantID)
+			if err != nil {
+				log.Printf("BeginRegistration: Invalid tenant_id format: %v", err)
+				c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid tenant_id format"})
+				return
+			}
+
+			clientUUID, err := uuid.Parse(req.ClientID)
+			if err != nil {
+				log.Printf("BeginRegistration: Invalid client_id format: %v", err)
+				c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid client_id format"})
+				return
+			}
+
+			// Create new user
+			newUser := &sharedmodels.User{
+				ID:        uuid.New(),
+				ClientID:  clientUUID,
+				TenantID:  tenantUUID,
+				Email:     req.Email,
+				Active:    true,
+				Provider:  "local",
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
+			}
+
+			if err := tenantDB.Create(newUser).Error; err != nil {
+				log.Printf("BeginRegistration: Failed to create user: %v", err)
+				c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "failed to create user"})
+				return
+			}
+
+			user = newUser
+			log.Printf("BeginRegistration: Created new user with ID=%s for email=%s", user.ID, user.Email)
+		} else {
+			log.Printf("BeginRegistration: Database error: %v", err)
+			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "database error"})
+			return
+		}
+	}
+
+	// Create WebAuthn user wrapper
+	webAuthnUser := &WebAuthnUser{User: user}
+
+	// Get existing credentials for this end user
+	credentials, err := clientRepo.GetCredentialsByClientID(user.ID.String())
+	if err != nil {
+		log.Printf("BeginRegistration: Error getting credentials - %v", err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to load credentials"})
+		return
+	}
+
+	// Convert to WebAuthn credentials
+	webauthnCredentials := make([]webauthn.Credential, len(credentials))
+	for i, cred := range credentials {
+		webauthnCredentials[i] = webauthn.Credential{
+			ID:              cred.CredentialID,
+			PublicKey:       cred.PublicKey,
+			AttestationType: cred.AttestationType,
+			Transport:       nil, // TODO: Add transport support
+		}
+	}
+
+	webAuthnUser.SetCredentials(webauthnCredentials)
+
+	// Validate origin and get appropriate WebAuthn instance
+	dynamicWebAuthn, err := h.validateOriginAndCreateWebAuthn(c)
+	if err != nil {
+		log.Printf("BeginRegistration: Origin validation failed - %v", err)
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid origin"})
+		return
+	}
+
+	// Begin WebAuthn registration
+	options, sessionData, err := dynamicWebAuthn.BeginRegistration(webAuthnUser)
+	if err != nil {
+		log.Printf("BeginRegistration: Error beginning registration - %v", err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to begin registration"})
+		return
+	}
+
+	// Store session data using tenant-specific session manager
+	reqID := uuid.New().String()
+	sessionManager, err := h.getTenantSessionManager(req.TenantID)
+	if err != nil {
+		log.Printf("[%s] BeginRegistration: Failed to get session manager - %v", reqID, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to initialize session"})
+		return
+	}
+
+	challengeKey := buildChallengeKey("registration", req.Email, req.TenantID)
+	if err := sessionManager.Save(challengeKey, sessionData); err != nil {
+		log.Printf("[%s] BeginRegistration: Failed to save session - %v", reqID, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to save session"})
+		return
+	}
+
+	c.JSON(http.StatusOK, options)
+}
+
+// FinishRegistration completes WebAuthn registration for end users
+// @Summary      Finish WebAuthn Registration for End Users
+// @Description  Completes WebAuthn credential registration for end users and stores in tenant-specific database
+// @Tags         WebAuthn, EndUser
+// @Accept       json
+// @Produce      json
+// @Param        request body object{tenant_id=string,email=string,credential=string} true "Registration completion data"
+// @Success      200 {object} object{success=bool,credential_id=string,message=string} "Registration completion response"
+// @Failure      400 {object} ErrorResponse
+// @Failure      404 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /webauthn/enduser/finishRegistration [post]
+func (h *EndUserWebAuthnHandler) FinishRegistration(c *gin.Context) {
+	var req struct {
+		TenantID   string          `json:"tenant_id" binding:"required"`
+		Email      string          `json:"email" binding:"required"`
+		ClientID   string          `json:"client_id" binding:"required"`
+		Credential json.RawMessage `json:"credential" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "tenant_id, email, client_id, and credential are required"})
+		return
+	}
+
+	reqID := uuid.New().String()
+	log.Printf("[%s] FinishRegistration: Starting for email=%s, tenant=%s", reqID, req.Email, req.TenantID)
+	log.Printf("[%s] FinishRegistration: Received credential data length: %d bytes", reqID, len(req.Credential))
+	previewLen := len(req.Credential)
+	if previewLen > 200 {
+		previewLen = 200
+	}
+	log.Printf("[%s] FinishRegistration: Credential data preview: %s", reqID, string(req.Credential[:previewLen]))
+
+	tenantDB, err := h.resolveDB(req.TenantID)
+	if err != nil {
+		log.Printf("[%s] FinishRegistration: DB connect failed - %v", reqID, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "db connect failed"})
+		return
+	}
+
+	// Get end user by email, tenant, and client_id
+	clientRepo := repositories.NewClientRepository(tenantDB)
+	user, err := clientRepo.GetClientByEmailTenantAndClient(req.Email, req.TenantID, req.ClientID)
+	if err != nil {
+		log.Printf("[%s] FinishRegistration: User not found - %v", reqID, err)
+		c.JSON(http.StatusNotFound, ErrorResponse{Error: "user not found"})
+		return
+	}
+
+	// Get session data using tenant-specific session manager
+	sessionManager, err := h.getTenantSessionManager(req.TenantID)
+	if err != nil {
+		log.Printf("[%s] FinishRegistration: Failed to get session manager - %v", reqID, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to initialize session"})
+		return
+	}
+
+	challengeKey := buildChallengeKey("registration", req.Email, req.TenantID)
+	sessionData, found := sessionManager.Get(challengeKey)
+	if !found {
+		log.Printf("[%s] FinishRegistration: No session found for key=%s", reqID, challengeKey)
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "no registration session"})
+		return
+	}
+
+	sessionDataTyped, ok := sessionData.(*webauthn.SessionData)
+	if !ok {
+		log.Printf("[%s] FinishRegistration: Invalid session data type", reqID)
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid session"})
+		return
+	}
+
+	// Create WebAuthn user wrapper
+	webAuthnUser := &WebAuthnUser{User: user}
+
+	// Load existing credentials
+	existingCreds, _ := clientRepo.GetCredentialsByClientID(user.ID.String())
+	webauthnCredentials := make([]webauthn.Credential, len(existingCreds))
+	for i, cred := range existingCreds {
+		webauthnCredentials[i] = webauthn.Credential{
+			ID:              cred.CredentialID,
+			PublicKey:       cred.PublicKey,
+			AttestationType: cred.AttestationType,
+		}
+	}
+	webAuthnUser.SetCredentials(webauthnCredentials)
+
+	// Validate origin and get appropriate WebAuthn instance
+	dynamicWebAuthn, err := h.validateOriginAndCreateWebAuthn(c)
+	if err != nil {
+		log.Printf("[%s] FinishRegistration: Origin validation failed - %v", reqID, err)
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid origin"})
+		return
+	}
+
+	// Reset request body for go-webauthn parser
+	c.Request.Body = io.NopCloser(bytes.NewReader(req.Credential))
+	c.Request.ContentLength = int64(len(req.Credential))
+	c.Request.Header.Set("Content-Type", "application/json")
+	log.Printf("[%s] FinishRegistration: Request Content-Type: %s", reqID, c.Request.Header.Get("Content-Type"))
+	log.Printf("[%s] FinishRegistration: Request Content-Length: %d", reqID, c.Request.ContentLength)
+
+	// Finish WebAuthn registration
+	credential, err := dynamicWebAuthn.FinishRegistration(webAuthnUser, *sessionDataTyped, c.Request)
+	if err != nil {
+		log.Printf("[%s] FinishRegistration: WebAuthn finish failed - %v", reqID, err)
+		log.Printf("[%s] FinishRegistration: Error type: %T", reqID, err)
+
+		if strings.Contains(err.Error(), "attestation") ||
+			strings.Contains(err.Error(), "Invalid attestation") ||
+			strings.Contains(err.Error(), "format") ||
+			strings.Contains(err.Error(), "validation") {
+
+			log.Printf("[%s] FinishRegistration: Attempting fallback credential creation", reqID)
+
+			var container CredentialContainer
+			if unmarshalErr := json.Unmarshal(req.Credential, &container); unmarshalErr != nil {
+				log.Printf("[%s] FinishRegistration: Failed to parse credential payload for fallback: %v", reqID, unmarshalErr)
+				c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid credential payload"})
+				return
+			}
+
+			fallbackCred, fbErr := buildFallbackCredentialFromContainer(&container)
+			if fbErr != nil {
+				log.Printf("[%s] FinishRegistration: Fallback credential creation failed: %v", reqID, fbErr)
+				c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid attestation/public key"})
+				return
+			}
+
+			log.Printf("[%s] FinishRegistration: Fallback credential created successfully", reqID)
+			credential = fallbackCred
+		} else {
+			if protoErr, ok := err.(*protocol.Error); ok {
+				log.Printf("[%s] FinishRegistration: Protocol error type: %s, details: %s", reqID, protoErr.Type, protoErr.Details)
+			}
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: "registration failed"})
+			return
+		}
+	}
+
+	if credential == nil {
+		log.Printf("[%s] FinishRegistration: credential is nil after WebAuthn processing", reqID)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "credential creation failed"})
+		return
+	}
+
+	if len(credential.ID) == 0 {
+		log.Printf("[%s] FinishRegistration: credential ID is empty", reqID)
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "credential ID cannot be empty"})
+		return
+	}
+	if len(credential.PublicKey) == 0 {
+		log.Printf("[%s] FinishRegistration: credential public key is empty", reqID)
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "credential public key cannot be empty"})
+		return
+	}
+
+	attestationType := credential.AttestationType
+	if attestationType == "" {
+		log.Printf("[%s] FinishRegistration: Empty attestation type, defaulting to 'none'", reqID)
+		attestationType = "none"
+	}
+
+	// Extract RP ID from the WebAuthn config to store with credential
+	rpID := dynamicWebAuthn.Config.RPID
+	log.Printf("[%s] FinishRegistration: Storing credential with RP ID: %s", reqID, rpID)
+
+	// Save credential
+	cred := repositories.Credential{
+		ID:              uuid.New(),
+		ClientID:        user.ID, // Use user.ID for end users
+		CredentialID:    credential.ID,
+		PublicKey:       credential.PublicKey,
+		AttestationType: attestationType,
+		SignCount:       int64(credential.Authenticator.SignCount),
+		BackupEligible:  credential.Flags.BackupEligible,
+		BackupState:     credential.Flags.BackupState,
+		RPID:            &rpID, // Store the RP ID
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
+	}
+
+	// Handle AAGUID
+	if len(credential.Authenticator.AAGUID) == 16 {
+		if parsed, err := uuid.FromBytes(credential.Authenticator.AAGUID); err == nil {
+			cred.AAGUID = &parsed
+		}
+	}
+
+	if err := clientRepo.SaveCredential(&cred); err != nil {
+		log.Printf("[%s] FinishRegistration: Failed to save credential - %v", reqID, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "failed to save credential"})
+		return
+	}
+
+	// Enable MFA method
+	mfaRepo := repositories.NewMFARepository(tenantDB)
+	if err := mfaRepo.EnableMethod(user.ID.String(), "webauthn", map[string]interface{}{
+		"credential_id": fmt.Sprintf("%x", credential.ID),
+	}, user.ID); err != nil {
+		log.Printf("[%s] FinishRegistration: Failed to enable MFA method - %v", reqID, err)
+	}
+
+	// Update user MFA settings
+	methods := pq.StringArray{"webauthn"}
+	updateSQL := `
+		UPDATE users
+		SET mfa_enabled = true,
+		    mfa_verified = true,
+		    mfa_default_method = 'webauthn',
+		    mfa_method = $1,
+		    updated_at = $2
+		WHERE id = $3`
+
+	if err := tenantDB.Exec(updateSQL, methods, time.Now(), user.ID).Error; err != nil {
+		log.Printf("[%s] FinishRegistration: Failed to update MFA flags - %v", reqID, err)
+	}
+
+	// Cleanup session
+	sessionManager.Delete(challengeKey)
+
+	// Audit log for successful WebAuthn registration
+	middleware.AuditAuthentication(c, user.ID.String(), "webauthn", "register", true, map[string]interface{}{
+		"credential_id": fmt.Sprintf("%x", credential.ID),
+		"user_type":     "enduser",
+		"tenant_id":     req.TenantID,
+	})
+
+	log.Printf("[%s] FinishRegistration: Completed successfully", reqID)
+	c.JSON(http.StatusOK, gin.H{
+		"success":       true,
+		"credential_id": fmt.Sprintf("%x", credential.ID),
+	})
+}
+
+// BeginAuthentication starts WebAuthn authentication for end users
+// @Summary      Begin WebAuthn Authentication for End Users
+// @Description  Initiates WebAuthn authentication (login) for end users using tenant-specific database
+// @Tags         WebAuthn, EndUser
+// @Accept       json
+// @Produce      json
+// @Param        request body object{tenant_id=string,email=string} true "Authentication initiation data"
+// @Success      200 {object} object{} "WebAuthn assertion options"
+// @Failure      400 {object} ErrorResponse
+// @Failure      404 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /webauthn/enduser/beginAuthentication [post]
+func (h *EndUserWebAuthnHandler) BeginAuthentication(c *gin.Context) {
+	reqID := uuid.New().String()
+	log.Printf("[%s] BeginAuthentication: START", reqID)
+
+	var req struct {
+		TenantID string  `json:"tenant_id" binding:"required"`
+		Email    string  `json:"email" binding:"required"`
+		ClientID *string `json:"client_id"` // Optional
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Printf("[%s] BeginAuthentication: invalid request: %v", reqID, err)
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "tenant_id and email are required"})
+		return
+	}
+
+	tenantDB, err := h.resolveDB(req.TenantID)
+	if err != nil {
+		log.Printf("[%s] BeginAuthentication: DB connect failed - %v", reqID, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "db connect failed"})
+		return
+	}
+
+	// Get end user by email, tenant, and optional client_id
+	clientRepo := repositories.NewClientRepository(tenantDB)
+	var user *sharedmodels.User
+	if req.ClientID != nil && *req.ClientID != "" {
+		user, err = clientRepo.GetClientByEmailTenantAndClient(req.Email, req.TenantID, *req.ClientID)
+	} else {
+		user, err = clientRepo.GetClientByEmailAndTenant(&req.Email, &req.TenantID, nil)
+	}
+	if err != nil {
+		log.Printf("[%s] BeginAuthentication: user not found email=%s tenant_id=%s err=%v", reqID, req.Email, req.TenantID, err)
+		c.JSON(http.StatusNotFound, ErrorResponse{Error: "user not found"})
+		return
+	}
+
+	// Create WebAuthn user wrapper
+	webAuthnUser := &WebAuthnUser{User: user}
+
+	// Load existing credentials
+	existingCreds, err := clientRepo.GetCredentialsByClientID(user.ID.String())
+	if err != nil {
+		log.Printf("[%s] BeginAuthentication: failed to load credentials: %v", reqID, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "failed to load credentials"})
+		return
+	}
+	log.Printf("[%s] BeginAuthentication: loaded %d credentials for user %s", reqID, len(existingCreds), user.Email)
+
+	// Convert to WebAuthn credentials
+	var creds []webauthn.Credential
+	for _, dbCred := range existingCreds {
+		creds = append(creds, webauthn.Credential{
+			ID:              dbCred.CredentialID,
+			PublicKey:       dbCred.PublicKey,
+			AttestationType: dbCred.AttestationType,
+			Authenticator: webauthn.Authenticator{
+				SignCount: uint32(dbCred.SignCount),
+			},
+			Flags: webauthn.CredentialFlags{
+				BackupEligible: dbCred.BackupEligible,
+				BackupState:    dbCred.BackupState,
+			},
+		})
+	}
+	webAuthnUser.SetCredentials(creds)
+
+	// Begin WebAuthn authentication
+	options, sessionData, err := h.WebAuthn.BeginLogin(webAuthnUser)
+	if err != nil {
+		log.Printf("[%s] BeginAuthentication: BeginLogin failed: %v", reqID, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "failed to begin authentication"})
+		return
+	}
+
+	// Save session data using tenant-specific session manager
+	sessionManager, err := h.getTenantSessionManager(req.TenantID)
+	if err != nil {
+		log.Printf("[%s] BeginAuthentication: Failed to get session manager - %v", reqID, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to initialize session"})
+		return
+	}
+
+	challengeKey := buildChallengeKey("authentication", req.Email, req.TenantID)
+	if err := sessionManager.Save(challengeKey, sessionData); err != nil {
+		log.Printf("[%s] BeginAuthentication: Failed to save session - %v", reqID, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to save session"})
+		return
+	}
+
+	log.Printf("[%s] BeginAuthentication: session saved for email=%s tenant_id=%s", reqID, req.Email, req.TenantID)
+	c.JSON(http.StatusOK, options)
+}
+
+// FinishAuthentication completes WebAuthn authentication for end users
+// @Summary      Finish WebAuthn Authentication for End Users
+// @Description  Completes WebAuthn authentication (login) for end users and validates credentials
+// @Tags         WebAuthn, EndUser
+// @Accept       json
+// @Produce      json
+// @Param        request body object{tenant_id=string,email=string,response=object} true "Authentication completion data"
+// @Success      200 {object} object{success=bool,user_id=string} "Authentication success response"
+// @Failure      400 {object} ErrorResponse
+// @Failure      401 {object} ErrorResponse
+// @Failure      500 {object} ErrorResponse
+// @Router       /webauthn/enduser/finishAuthentication [post]
+func (h *EndUserWebAuthnHandler) FinishAuthentication(c *gin.Context) {
+	var req struct {
+		TenantID   string          `json:"tenant_id" binding:"required"`
+		Email      string          `json:"email" binding:"required"`
+		ClientID   *string         `json:"client_id"` // Optional
+		Credential json.RawMessage `json:"credential" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "tenant_id, email, and credential are required"})
+		return
+	}
+
+	reqID := uuid.New().String()
+	log.Printf("[%s] FinishAuthentication: START", reqID)
+	log.Printf("[%s] FinishAuthentication: Received credential data length: %d bytes", reqID, len(req.Credential))
+
+	tenantDB, err := h.resolveDB(req.TenantID)
+	if err != nil {
+		log.Printf("[%s] FinishAuthentication: DB connect failed - %v", reqID, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "db connect failed"})
+		return
+	}
+
+	// Load session using tenant-specific session manager
+	sessionManager, err := h.getTenantSessionManager(req.TenantID)
+	if err != nil {
+		log.Printf("[%s] FinishAuthentication: Failed to get session manager - %v", reqID, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "Failed to initialize session"})
+		return
+	}
+
+	challengeKey := buildChallengeKey("authentication", req.Email, req.TenantID)
+	sessionData, found := sessionManager.Get(challengeKey)
+	if !found {
+		log.Printf("[%s] FinishAuthentication: no session found for key=%s", reqID, challengeKey)
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "no authentication session"})
+		return
+	}
+
+	sessionDataTyped, ok := sessionData.(*webauthn.SessionData)
+	if !ok {
+		log.Printf("[%s] FinishAuthentication: invalid session data type", reqID)
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid session"})
+		return
+	}
+
+	// Determine client ID from request payload or credential response
+	clientID := ""
+	if req.ClientID != nil {
+		clientID = strings.TrimSpace(*req.ClientID)
+	}
+	if clientID == "" {
+		if extractedClientID, err := extractClientIDFromCredential(req.Credential); err == nil {
+			clientID = extractedClientID
+			log.Printf("[%s] FinishAuthentication: extracted client_id from credential: %s", reqID, clientID)
+		} else {
+			log.Printf("[%s] FinishAuthentication: client_id not provided and extraction failed: %v", reqID, err)
+		}
+	}
+
+	// Load user from DB
+	clientRepo := repositories.NewClientRepository(tenantDB)
+	var user *sharedmodels.User
+	if clientID != "" {
+		user, err = clientRepo.GetClientByEmailTenantAndClient(req.Email, req.TenantID, clientID)
+	} else {
+		user, err = clientRepo.GetClientByEmailAndTenant(&req.Email, &req.TenantID, nil)
+	}
+	if err != nil {
+		log.Printf("[%s] FinishAuthentication: user lookup failed for email=%s tenant=%s: %v", reqID, req.Email, req.TenantID, err)
+		c.JSON(http.StatusUnauthorized, ErrorResponse{Error: "user not found"})
+		return
+	}
+
+	// Load existing credentials
+	existingCreds, err := clientRepo.GetCredentialsByClientID(user.ID.String())
+	if err != nil {
+		log.Printf("[%s] FinishAuthentication: failed to load credentials: %v", reqID, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "failed to load credentials"})
+		return
+	}
+	log.Printf("[%s] FinishAuthentication: loaded %d credentials for user %s", reqID, len(existingCreds), user.Email)
+
+	var creds []webauthn.Credential
+	for _, dbCred := range existingCreds {
+		creds = append(creds, webauthn.Credential{
+			ID:              dbCred.CredentialID,
+			PublicKey:       dbCred.PublicKey,
+			AttestationType: dbCred.AttestationType,
+			Authenticator: webauthn.Authenticator{
+				SignCount: uint32(dbCred.SignCount),
+			},
+			Flags: webauthn.CredentialFlags{
+				BackupEligible: dbCred.BackupEligible,
+				BackupState:    dbCred.BackupState,
+			},
+		})
+	}
+
+	// Complete authentication
+	webauthnUser := &WebAuthnUser{User: user}
+	webauthnUser.SetCredentials(creds)
+
+	// Validate origin and get appropriate WebAuthn instance
+	dynamicWebAuthn, err := h.validateOriginAndCreateWebAuthn(c)
+	if err != nil {
+		log.Printf("[%s] FinishAuthentication: Origin validation failed - %v", reqID, err)
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid origin"})
+		return
+	}
+
+	// Set up request body for go-webauthn library
+	c.Request.Body = io.NopCloser(bytes.NewReader(req.Credential))
+	c.Request.ContentLength = int64(len(req.Credential))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	// Add detailed logging for debugging parse errors
+	log.Printf("[%s] FinishAuthentication: About to call FinishLogin for user %s", reqID, user.Email)
+	log.Printf("[%s] FinishAuthentication: User has %d credentials", reqID, len(creds))
+	log.Printf("[%s] FinishAuthentication: Request Content-Type: %s", reqID, c.Request.Header.Get("Content-Type"))
+	log.Printf("[%s] FinishAuthentication: Request Content-Length: %d", reqID, c.Request.ContentLength)
+	log.Printf("[%s] FinishAuthentication: Session challenge: %x", reqID, sessionDataTyped.Challenge)
+	log.Printf("[%s] FinishAuthentication: Session UserID: %x", reqID, sessionDataTyped.UserID)
+
+	credential, err := dynamicWebAuthn.FinishLogin(webauthnUser, *sessionDataTyped, c.Request)
+	if err != nil {
+		log.Printf("[%s] FinishAuthentication failed: %v", reqID, err)
+
+		// Check for specific protocol error types
+		if protocolErr, ok := err.(*protocol.Error); ok {
+			log.Printf("[%s] FinishAuthentication: Protocol error type: %s, details: %s", reqID, protocolErr.Type, protocolErr.Details)
+		}
+
+		c.JSON(http.StatusUnauthorized, ErrorResponse{Error: "authentication failed"})
+		return
+	}
+
+	// Update credential metadata
+	if err := clientRepo.UpdateCredentialSignCount(credential.ID, credential.Authenticator.SignCount); err != nil {
+		log.Printf("[%s] FinishAuthentication: failed updating sign count for user=%s: %v", reqID, user.Email, err)
+	}
+	if err := clientRepo.UpdateCredentialFlags(credential.ID, credential.Flags.BackupEligible, credential.Flags.BackupState); err != nil {
+		log.Printf("[%s] FinishAuthentication: failed updating credential flags for user=%s: %v", reqID, user.Email, err)
+	}
+
+	// Update MFA last_used_at
+	mfaRepo := repositories.NewMFARepository(tenantDB)
+	if err := tenantDB.Table("mfa_methods").
+		Where("client_id = ? AND method_type = ?", user.ID, "webauthn").
+		Updates(map[string]interface{}{
+			"last_used_at": time.Now().UTC(),
+			"updated_at":   time.Now().UTC(),
+		}).Error; err != nil {
+		log.Printf("[%s] FinishAuthentication: failed updating MFA method for user=%s: %v", reqID, user.Email, err)
+	}
+	_ = mfaRepo // Keep reference to avoid unused variable warning
+
+	// Update user's last_login in tenant DB
+	now := time.Now().UTC()
+	tenantUpdates := map[string]interface{}{
+		"last_login":   now,
+		"mfa_verified": true,
+		"updated_at":   now,
+	}
+	if user.MFAEnrolledAt == nil || user.MFAEnrolledAt.IsZero() {
+		tenantUpdates["mfa_enrolled_at"] = now
+	}
+	if err := tenantDB.Model(&user).Updates(tenantUpdates).Error; err != nil {
+		log.Printf("[%s] FinishAuthentication: failed updating tenant user state for user=%s: %v", reqID, user.Email, err)
+	}
+
+	// Cleanup session
+	sessionManager.Delete(challengeKey)
+
+	// Audit log for successful WebAuthn authentication
+	middleware.AuditAuthentication(c, user.ID.String(), "webauthn", "authenticate", true, map[string]interface{}{
+		"credential_id": fmt.Sprintf("%x", credential.ID),
+		"user_type":     "enduser",
+		"tenant_id":     req.TenantID,
+		"email":         user.Email,
+	})
+
+	log.Printf("[%s] FinishAuthentication: COMPLETED SUCCESSFULLY", reqID)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"user_id": user.ID.String(),
+		"email":   user.Email,
+	})
+}
+
+func extractClientIDFromCredential(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 {
+		return "", errors.New("credential payload is empty")
+	}
+
+	var payload struct {
+		Response struct {
+			UserHandle string `json:"userHandle"`
+		} `json:"response"`
+	}
+
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return "", fmt.Errorf("failed to unmarshal credential: %w", err)
+	}
+
+	if payload.Response.UserHandle == "" {
+		return "", errors.New("userHandle not present in credential response")
+	}
+
+	decodeFns := []func(string) ([]byte, error){
+		func(s string) ([]byte, error) { return base64.RawURLEncoding.DecodeString(s) },
+		func(s string) ([]byte, error) { return base64.URLEncoding.DecodeString(s) },
+		func(s string) ([]byte, error) { return base64.RawStdEncoding.DecodeString(s) },
+		func(s string) ([]byte, error) { return base64.StdEncoding.DecodeString(s) },
+	}
+
+	var decoded []byte
+	var err error
+	for _, fn := range decodeFns {
+		decoded, err = fn(payload.Response.UserHandle)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to decode userHandle: %w", err)
+	}
+
+	clientID := strings.TrimSpace(string(decoded))
+	if clientID == "" {
+		return "", errors.New("decoded client_id is empty")
+	}
+
+	return clientID, nil
+}
