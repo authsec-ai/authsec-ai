@@ -1,13 +1,15 @@
-package platform
+package admin
 
 import (
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/authsec-ai/authsec/config"
+	sharedCtrl "github.com/authsec-ai/authsec/controllers/shared"
 	"github.com/authsec-ai/authsec/middlewares"
 	"github.com/authsec-ai/authsec/models"
 	"github.com/authsec-ai/authsec/services"
@@ -60,7 +62,7 @@ type agentClient struct {
 // ListAgents lists all AI agent clients for the tenant.
 // GET /uflow/admin/agents
 func (ac *AgentController) ListAgents(c *gin.Context) {
-	tenantID, err := resolveDelegationTenantID(c)
+	tenantID, err := sharedCtrl.ResolveTenantIDFromToken(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -95,7 +97,7 @@ func (ac *AgentController) ListAgents(c *gin.Context) {
 // GetAgent gets a single AI agent client by client_id.
 // GET /uflow/admin/agents/:id
 func (ac *AgentController) GetAgent(c *gin.Context) {
-	tenantID, err := resolveDelegationTenantID(c)
+	tenantID, err := sharedCtrl.ResolveTenantIDFromToken(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -131,7 +133,7 @@ func (ac *AgentController) GetAgent(c *gin.Context) {
 // The SPIFFE ID is then written back to the client record.
 // POST /uflow/admin/agents/:id/provision-identity
 func (ac *AgentController) ProvisionIdentity(c *gin.Context) {
-	tenantID, err := resolveDelegationTenantID(c)
+	tenantID, err := sharedCtrl.ResolveTenantIDFromToken(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -185,7 +187,7 @@ func (ac *AgentController) ProvisionIdentity(c *gin.Context) {
 	}
 
 	// Get auth token to pass to authsec-spire
-	authToken := extractDelegationBearerToken(c)
+	authToken := extractBearerToken(c)
 
 	// Call authsec-spire to create the workload entry — it generates the SPIFFE ID
 	spireResp, err := ac.spireService.CreateAgentEntry(&services.CreateAgentEntryRequest{
@@ -207,7 +209,6 @@ func (ac *AgentController) ProvisionIdentity(c *gin.Context) {
 		Update("spiffe_id", spireResp.SpiffeID)
 	if updateResult.Error != nil {
 		log.Printf("[AgentController] Failed to update client spiffe_id: %v", updateResult.Error)
-		// Entry was created in SPIRE but we couldn't update the client — log but return the SPIRE data
 	}
 
 	log.Printf("[AgentController] Agent %s provisioned: spiffe_id=%s entry_id=%s", clientID, spireResp.SpiffeID, spireResp.EntryID)
@@ -234,7 +235,7 @@ func (ac *AgentController) ProvisionIdentity(c *gin.Context) {
 // RevokeIdentity deletes the SPIRE workload entry for an AI agent and clears its SPIFFE ID.
 // DELETE /uflow/admin/agents/:id/revoke-identity
 func (ac *AgentController) RevokeIdentity(c *gin.Context) {
-	tenantID, err := resolveDelegationTenantID(c)
+	tenantID, err := sharedCtrl.ResolveTenantIDFromToken(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -292,7 +293,7 @@ func (ac *AgentController) RevokeIdentity(c *gin.Context) {
 // DelegateToken resolves delegation permissions and issues a JWT-SVID for the agent.
 // POST /uflow/admin/agents/:id/delegate-token
 func (ac *AgentController) DelegateToken(c *gin.Context) {
-	tenantID, err := resolveDelegationTenantID(c)
+	tenantID, err := sharedCtrl.ResolveTenantIDFromToken(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -342,7 +343,7 @@ func (ac *AgentController) DelegateToken(c *gin.Context) {
 	}
 
 	// Get admin user ID from token
-	userID := delegationContextString(c, "user_id")
+	userID := sharedCtrl.ContextStringValue(c, "user_id")
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Could not determine user ID from token"})
 		return
@@ -368,7 +369,7 @@ func (ac *AgentController) DelegateToken(c *gin.Context) {
 	}
 
 	// Get admin email for claims
-	emailID := delegationContextString(c, "email_id")
+	emailID := sharedCtrl.ContextStringValue(c, "email_id")
 
 	// Build custom claims for the JWT-SVID
 	customClaims := map[string]interface{}{
@@ -381,7 +382,7 @@ func (ac *AgentController) DelegateToken(c *gin.Context) {
 	}
 
 	// Get auth token to forward to authsec-spire
-	authToken := extractDelegationBearerToken(c)
+	authToken := extractBearerToken(c)
 
 	// Issue JWT-SVID via authsec-spire
 	finalTTL := int(ttl.Seconds())
@@ -453,7 +454,6 @@ func (ac *AgentController) DelegateToken(c *gin.Context) {
 		// Insert new row
 		if err := tenantDB.Create(&upsertToken).Error; err != nil {
 			log.Printf("[AgentController] Failed to store delegation token: %v", err)
-			// Non-fatal: the JWT-SVID was already issued, just log the error
 		} else {
 			log.Printf("[AgentController] Delegation token stored for agent %s", clientID)
 		}
@@ -478,4 +478,13 @@ func (ac *AgentController) DelegateToken(c *gin.Context) {
 		"audience":    req.Audience,
 		"ttl_seconds": finalTTL,
 	})
+}
+
+// extractBearerToken gets the Bearer token from the Authorization header.
+func extractBearerToken(c *gin.Context) string {
+	auth := c.GetHeader("Authorization")
+	if strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ")
+	}
+	return ""
 }

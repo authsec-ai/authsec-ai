@@ -1,12 +1,14 @@
-package platform
+package admin
 
 import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/authsec-ai/authsec/config"
+	sharedCtrl "github.com/authsec-ai/authsec/controllers/shared"
 	"github.com/authsec-ai/authsec/middlewares"
 	"github.com/authsec-ai/authsec/models"
 	"github.com/authsec-ai/authsec/services"
@@ -49,8 +51,19 @@ type UpdateDelegationPolicyRequest struct {
 }
 
 // CreateDelegationPolicy creates a new delegation policy for a tenant.
+// @Summary     Create delegation policy
+// @Description Defines which role can delegate to which AI agent type, with permission scoping and TTL cap.
+// @Tags        Delegation
+// @Accept      json
+// @Produce     json
+// @Security    BearerAuth
+// @Param       input body CreateDelegationPolicyRequest true "Delegation policy"
+// @Success     201 {object} models.DelegationPolicy
+// @Failure     400 {object} map[string]string
+// @Failure     409 {object} map[string]string
+// @Router      /uflow/delegation-policies [post]
 func (dc *DelegationPolicyController) CreateDelegationPolicy(c *gin.Context) {
-	tenantID, err := resolveDelegationTenantID(c)
+	tenantID, err := sharedCtrl.ResolveTenantIDFromToken(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -85,7 +98,7 @@ func (dc *DelegationPolicyController) CreateDelegationPolicy(c *gin.Context) {
 	permsJSON, _ := json.Marshal(allowedPerms)
 
 	// Extract created_by from token
-	userIDStr := delegationContextString(c, "user_id")
+	userIDStr := sharedCtrl.ContextStringValue(c, "user_id")
 	var createdBy *uuid.UUID
 	if uid, err := uuid.Parse(userIDStr); err == nil {
 		createdBy = &uid
@@ -141,7 +154,7 @@ func (dc *DelegationPolicyController) CreateDelegationPolicy(c *gin.Context) {
 			Row().Scan(&spiffeID, &clientType, &agentType)
 
 		if clientType == "ai_agent" {
-			authToken := extractDelegationBearerToken(c)
+			authToken := extractBearerToken(c)
 			resolvedSpiffeID := ""
 
 			if spiffeID == nil || *spiffeID == "" {
@@ -208,7 +221,7 @@ func (dc *DelegationPolicyController) CreateDelegationPolicy(c *gin.Context) {
 				}
 				ttlDuration := time.Duration(req.MaxTTLSeconds) * time.Second
 
-				// Use the policy we just created directly — no need to look it up by user roles
+				// Use the policy we just created directly
 				delegatedPerms := policy.GetAllowedPermissions()
 				if len(delegatedPerms) == 0 {
 					response["delegate_token"] = gin.H{
@@ -216,7 +229,7 @@ func (dc *DelegationPolicyController) CreateDelegationPolicy(c *gin.Context) {
 						"reason": "No permissions in policy",
 					}
 				} else {
-					emailID := delegationContextString(c, "email_id")
+					emailID := sharedCtrl.ContextStringValue(c, "email_id")
 					customClaims := map[string]interface{}{
 						"user_id":     userIDStr,
 						"tenant_id":   tenantID.String(),
@@ -316,8 +329,18 @@ func (dc *DelegationPolicyController) CreateDelegationPolicy(c *gin.Context) {
 }
 
 // ListDelegationPolicies lists all delegation policies for a tenant.
+// @Summary     List delegation policies
+// @Description Returns all delegation policies for the tenant. Supports filters: role_name, agent_type, enabled.
+// @Tags        Delegation
+// @Produce     json
+// @Security    BearerAuth
+// @Param       role_name  query string false "Filter by role name"
+// @Param       agent_type query string false "Filter by agent type"
+// @Param       enabled    query string false "Filter by enabled status (true/false)"
+// @Success     200 {array} models.DelegationPolicy
+// @Router      /uflow/delegation-policies [get]
 func (dc *DelegationPolicyController) ListDelegationPolicies(c *gin.Context) {
-	tenantID, err := resolveDelegationTenantID(c)
+	tenantID, err := sharedCtrl.ResolveTenantIDFromToken(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -353,8 +376,16 @@ func (dc *DelegationPolicyController) ListDelegationPolicies(c *gin.Context) {
 }
 
 // GetDelegationPolicy retrieves a single delegation policy by ID.
+// @Summary     Get delegation policy
+// @Tags        Delegation
+// @Produce     json
+// @Security    BearerAuth
+// @Param       id path string true "Policy ID (UUID)"
+// @Success     200 {object} models.DelegationPolicy
+// @Failure     404 {object} map[string]string
+// @Router      /uflow/delegation-policies/{id} [get]
 func (dc *DelegationPolicyController) GetDelegationPolicy(c *gin.Context) {
-	tenantID, err := resolveDelegationTenantID(c)
+	tenantID, err := sharedCtrl.ResolveTenantIDFromToken(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -383,8 +414,18 @@ func (dc *DelegationPolicyController) GetDelegationPolicy(c *gin.Context) {
 }
 
 // UpdateDelegationPolicy updates an existing delegation policy.
+// @Summary     Update delegation policy
+// @Tags        Delegation
+// @Accept      json
+// @Produce     json
+// @Security    BearerAuth
+// @Param       id    path string                        true "Policy ID (UUID)"
+// @Param       input body UpdateDelegationPolicyRequest true "Fields to update"
+// @Success     200 {object} models.DelegationPolicy
+// @Failure     404 {object} map[string]string
+// @Router      /uflow/delegation-policies/{id} [put]
 func (dc *DelegationPolicyController) UpdateDelegationPolicy(c *gin.Context) {
-	tenantID, err := resolveDelegationTenantID(c)
+	tenantID, err := sharedCtrl.ResolveTenantIDFromToken(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -473,8 +514,16 @@ func (dc *DelegationPolicyController) UpdateDelegationPolicy(c *gin.Context) {
 }
 
 // DeleteDelegationPolicy deletes a delegation policy.
+// @Summary     Delete delegation policy
+// @Tags        Delegation
+// @Produce     json
+// @Security    BearerAuth
+// @Param       id path string true "Policy ID (UUID)"
+// @Success     200 {object} map[string]string
+// @Failure     404 {object} map[string]string
+// @Router      /uflow/delegation-policies/{id} [delete]
 func (dc *DelegationPolicyController) DeleteDelegationPolicy(c *gin.Context) {
-	tenantID, err := resolveDelegationTenantID(c)
+	tenantID, err := sharedCtrl.ResolveTenantIDFromToken(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -504,16 +553,23 @@ func (dc *DelegationPolicyController) DeleteDelegationPolicy(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "deleted", "id": policyID.String()})
 }
 
-// GetMyRolesAndPermissions returns the tenant's full RBAC catalog (roles, permissions, scopes, resources).
-// Used by the delegation UI to show what can be delegated.
+// GetMyRolesAndPermissions returns the authenticated admin's roles and permissions.
+// This is used by the delegation UI to show what permissions can be delegated.
+// @Summary     Get my roles and permissions
+// @Tags        Delegation
+// @Produce     json
+// @Security    BearerAuth
+// @Success     200 {object} map[string]interface{}
+// @Failure     401 {object} map[string]string
+// @Router      /uflow/admin/me/roles-permissions [get]
 func (dc *DelegationPolicyController) GetMyRolesAndPermissions(c *gin.Context) {
-	tenantID, err := resolveDelegationTenantID(c)
+	tenantID, err := sharedCtrl.ResolveTenantIDFromToken(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
 
-	userID := delegationContextString(c, "user_id")
+	userID := sharedCtrl.ContextStringValue(c, "user_id")
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User ID not found in token"})
 		return
@@ -555,4 +611,13 @@ func (dc *DelegationPolicyController) GetMyRolesAndPermissions(c *gin.Context) {
 		"scopes":      scopes,
 		"resources":   resources,
 	})
+}
+
+// isDuplicateKeyError checks if a GORM error is a PostgreSQL unique constraint violation.
+func isDuplicateKeyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "duplicate key") || strings.Contains(errStr, "23505")
 }
