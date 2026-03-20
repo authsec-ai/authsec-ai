@@ -10,15 +10,17 @@ This monorepo contains everything needed to self-host AuthSec:
 
 ```
 authsec-ai/
-├── authsec/        # Go backend — single binary serving all IAM modules
-├── authsec-ui/     # React 19 + TypeScript frontend
-└── onprem/         # Docker Compose stack + Nginx + setup scripts
+├── authsec/                # Go backend — single binary serving all IAM modules
+├── authsec-ui/             # React 19 + TypeScript frontend
+├── authsec-authenticator/   # React Native + Expo mobile authenticator app
+└── onprem/                 # Docker Compose stack + Nginx + setup scripts
 ```
 
 Each sub-directory has its own detailed README:
 
 - [authsec/README.md](authsec/README.md) — Backend architecture, API reference, environment variables
 - [authsec-ui/README.md](authsec-ui/README.md) — Frontend setup, scripts, environment variables
+- [authsec-authenticator/README.md](authsec-authenticator/README.md) — Mobile authenticator app (CIBA push approval, TOTP, biometric, OIDC/SAML)
 - [onprem/README.md](onprem/README.md) — Full deployment guide (Docker Compose, TLS, production hardening)
 - [onprem/TROUBLESHOOTING.md](onprem/TROUBLESHOOTING.md) — Common issues and fixes
 
@@ -160,6 +162,7 @@ See [authsec-ui/README.md](authsec-ui/README.md) for all scripts and configurati
 |---|---|
 | Backend | Go 1.25, Gin, GORM, PostgreSQL 15 |
 | Frontend | React 19, TypeScript 5.8, Vite 6, Redux Toolkit, Tailwind CSS 4, Radix UI |
+| Mobile | React Native, Expo, TypeScript |
 | OAuth2/OIDC | Ory Hydra |
 | Secrets | HashiCorp Vault |
 | Cache | Redis 7 |
