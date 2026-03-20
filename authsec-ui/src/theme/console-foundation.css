@@ -1,0 +1,53 @@
+@layer base {
+  :root {
+    /* Shared console foundation tokens. Adapter files (admin/dashboard/sdk)
+       should alias to these instead of duplicating hardcoded palette values. */
+    --console-surface-page: #f3f4f6;
+    --console-surface-panel: #ffffff;
+    --console-surface-stage: #f8f9fb;
+    --console-surface-rail: #f7f8fa;
+    --console-surface-subsection: #f7f9fc;
+
+    --console-border-soft: #e8ebf1;
+    --console-border-strong: #d7dce4;
+    --console-border-header: #cfd5df;
+    --console-border-divider: #e2e6ee;
+
+    --console-text-1: #16191f;
+    --console-text-2: #5f6b7a;
+    --console-text-3: #7d8794;
+
+    --console-accent: var(--brand-blue-600);
+
+    --console-radius-panel: 4px;
+    --console-radius-control: 6px;
+    --console-radius-menu: 6px;
+
+    --console-hover-fill: color-mix(in srgb, var(--console-accent) 3%, var(--console-surface-panel));
+    --console-hover-outline: color-mix(in srgb, var(--console-accent) 18%, var(--console-border-strong));
+    --console-focus-ring: color-mix(in srgb, var(--console-accent) 22%, transparent);
+  }
+
+  .dark {
+    --console-surface-page: #111111;
+    --console-surface-panel: #161616;
+    --console-surface-stage: #1a1a1a;
+    --console-surface-rail: #1e1e1e;
+    --console-surface-subsection: #181818;
+
+    --console-border-soft: rgba(255, 255, 255, 0.1);
+    --console-border-strong: rgba(255, 255, 255, 0.16);
+    --console-border-header: rgba(255, 255, 255, 0.22);
+    --console-border-divider: rgba(255, 255, 255, 0.12);
+
+    --console-text-1: #f3f4f6;
+    --console-text-2: #c1c8d4;
+    --console-text-3: #94a0b3;
+
+    --console-accent: var(--brand-blue-600);
+
+    --console-hover-fill: color-mix(in srgb, var(--console-accent) 6%, var(--console-surface-panel));
+    --console-hover-outline: color-mix(in srgb, var(--console-accent) 32%, var(--console-border-strong));
+    --console-focus-ring: color-mix(in srgb, var(--console-accent) 34%, transparent);
+  }
+}
