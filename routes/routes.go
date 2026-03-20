@@ -89,6 +89,11 @@ func SetupRoutes(
 	scopeController := adminCtrl.NewScopeController()
 	apiScopesController := adminCtrl.NewAPIScopesController()
 
+	// AI Agent Delegation controllers
+	agentController := adminCtrl.NewAgentController()
+	delegationPolicyController := adminCtrl.NewDelegationPolicyController()
+	sdkTokenController := adminCtrl.NewSDKTokenController()
+
 	// Legacy / existing controllers
 	groupController := &adminCtrl.GroupController{}
 	endUserController := &userCtrl.EndUserController{}
@@ -255,6 +260,17 @@ func SetupRoutes(
 			adminRBAC.GET("/api_scopes/:scope_id", apiScopesController.GetAPIScopeAdmin)
 			adminRBAC.PUT("/api_scopes/:scope_id", apiScopesController.UpdateAPIScopeAdmin)
 			adminRBAC.DELETE("/api_scopes/:scope_id", apiScopesController.DeleteAPIScopeAdmin)
+
+			// AI Agent Management
+			adminRBAC.GET("/agents", agentController.ListAgents)
+			adminRBAC.GET("/agents/:id", agentController.GetAgent)
+			adminRBAC.POST("/agents/:id/provision-identity", agentController.ProvisionIdentity)
+			adminRBAC.DELETE("/agents/:id/revoke-identity", agentController.RevokeIdentity)
+			adminRBAC.POST("/agents/:id/delegate-token", agentController.DelegateToken)
+			adminRBAC.POST("/agents/:id/revoke-token", sdkTokenController.RevokeDelegationToken)
+
+			// Admin self-introspection (delegation UI)
+			adminRBAC.GET("/me/roles-permissions", delegationPolicyController.GetMyRolesAndPermissions)
 		}
 
 		// ────────────────────────────────────────────────────
@@ -614,6 +630,31 @@ func SetupRoutes(
 			scimAdmin.PUT("/Users/:id", scimAdminController.ReplaceAdminUser)
 			scimAdmin.PATCH("/Users/:id", scimAdminController.PatchAdminUser)
 			scimAdmin.DELETE("/Users/:id", scimAdminController.DeleteAdminUser)
+		}
+
+		// ────────────────────────────────────────────────────
+		// Delegation Policy CRUD (admin-authenticated)
+		// ────────────────────────────────────────────────────
+		delegationPolicies := uflow.Group("/delegation-policies")
+		delegationPolicies.Use(
+			middlewares.AuthMiddleware(),
+			middlewares.Require("admin", "access"),
+			amMiddlewares.ValidateTenantFromToken(),
+		)
+		{
+			delegationPolicies.POST("", delegationPolicyController.CreateDelegationPolicy)
+			delegationPolicies.GET("", delegationPolicyController.ListDelegationPolicies)
+			delegationPolicies.GET("/:id", delegationPolicyController.GetDelegationPolicy)
+			delegationPolicies.PUT("/:id", delegationPolicyController.UpdateDelegationPolicy)
+			delegationPolicies.DELETE("/:id", delegationPolicyController.DeleteDelegationPolicy)
+		}
+
+		// ────────────────────────────────────────────────────
+		// SDK Token Pull (public, authenticated by client_id)
+		// ────────────────────────────────────────────────────
+		sdk := uflow.Group("/sdk")
+		{
+			sdk.GET("/delegation-token", sdkTokenController.GetDelegationToken)
 		}
 
 		// ────────────────────────────────────────────────────
