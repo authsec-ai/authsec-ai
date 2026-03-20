@@ -1,0 +1,465 @@
+:root {
+  /* Base spacing scale (4px rhythm) */
+  --space-0: 0px;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-7: 1.75rem;
+  --space-8: 2rem;
+  --space-9: 2.5rem;
+  --space-10: 3rem;
+
+  /* Border radius scale */
+  --radius-xs: 0.25rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.5rem;
+  --radius-pill: 999px;
+
+  /* Elevation scale */
+  --shadow-none: none;
+  --shadow-xs: 0 1px 1px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.08);
+  --shadow-sm: 0 10px 20px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 16px 40px rgba(15, 23, 42, 0.12);
+
+  /* Motion */
+  --motion-duration-fast: 120ms;
+  --motion-duration-base: 180ms;
+  --motion-duration-slow: 260ms;
+  --motion-easing-standard: cubic-bezier(0.33, 1, 0.68, 1);
+
+  /* Typography ramp */
+  --font-family-sans:
+    "Inter", "SF Pro Text", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-family-mono:
+    "JetBrains Mono", "Fira Code", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono",
+    monospace;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-md: 1rem;
+  --font-size-lg: 1.125rem;
+  --font-size-xl: 1.25rem;
+  --font-size-display: 1.75rem;
+  --font-size-display-lg: clamp(2.25rem, 2.1rem + 0.6vw, 2.75rem);
+  --font-size-heading-xl: 2rem;
+  --font-size-heading-lg: 1.75rem;
+  --font-size-heading-md: 1.5rem;
+  --font-size-heading-sm: 1.25rem;
+  --font-size-heading-xs: 1.125rem;
+  --font-size-body-lg: 1.0625rem;
+  --font-size-body-md: 1rem;
+  --font-size-body-sm: 0.9375rem;
+  --font-size-body-xs: 0.8125rem;
+
+  --line-height-tight: 1.2;
+  --line-height-normal: 1.4;
+  --line-height-relaxed: 1.6;
+  --line-height-heading: 1.22;
+  --line-height-body: 1.62;
+  --letter-spacing-tight: -0.015em;
+  --letter-spacing-normal: -0.005em;
+  --letter-spacing-wide: 0.025em;
+
+  /* Light mode palette - clean black/white */
+  --color-surface-base: #ffffff;
+  --color-surface-raised: #ffffff;
+  --color-surface-subtle: #f5f5f5;
+  --color-surface-inverse: #000000;
+
+  /* Text - pure black only, no gray */
+  --color-text-primary: #000000;
+  --color-text-secondary: #000000;
+  /* Button text on colored backgrounds must always be white */
+  --color-text-on-dark: #ffffff;
+  --color-text-on-primary: #ffffff;
+
+  /* Borders */
+  --color-border-subtle: rgba(0, 0, 0, 0.1);
+  --color-border-strong: rgba(0, 0, 0, 0.15);
+
+  /* Shared brand blue scale (Google-blue tuned) */
+  --brand-blue-50: #e8f0fe;
+  --brand-blue-100: #d2e3fc;
+  --brand-blue-200: #aecbfa;
+  --brand-blue-300: #8ab4f8;
+  --brand-blue-400: #669df6;
+  --brand-blue-500: #4285f4;
+  --brand-blue-600: #1a73e8;
+  --brand-blue-700: #1967d2;
+  --brand-blue-800: #185abc;
+  --brand-blue-900: #174ea6;
+
+  /* Primary accent */
+  --color-primary: var(--brand-blue-600);
+  --color-primary-strong: var(--brand-blue-700);
+  --color-primary-soft: var(--brand-blue-50);
+
+  /* Status colors */
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+
+  /* Muted surfaces */
+  --color-muted: #f5f5f5;
+  --color-accent: #f5f5f5;
+  --color-chart-1: oklch(0.809 0.105 251.813);
+  --color-chart-2: oklch(0.623 0.214 259.815);
+  --color-chart-3: oklch(0.546 0.245 262.881);
+  --color-chart-4: oklch(0.488 0.243 264.376);
+  --color-chart-5: oklch(0.424 0.199 265.638);
+
+  /* Component defaults */
+  --component-card-background: var(--color-surface-raised);
+  --component-card-foreground: var(--color-text-primary);
+  --component-card-border: var(--color-border-subtle);
+  --component-card-shadow: var(--shadow-xs);
+  --component-card-radius: var(--radius-xs);
+  --component-card-gap: var(--space-6);
+  --component-card-padding-block: var(--space-7);
+  --component-card-padding-inline: var(--space-7);
+  --component-card-header-padding-block: var(--space-5);
+  --component-card-header-padding-inline: var(--space-7);
+  --component-card-footer-padding-block: var(--space-5);
+  --component-card-footer-padding-inline: var(--space-7);
+
+  --component-card-content-compact-inline: var(--space-6);
+  --component-card-content-compact-block: var(--space-4);
+
+  --component-form-max-width: 70rem;
+  --component-form-shell-gap: var(--space-8);
+  --component-form-section-gap: var(--space-6);
+  --component-form-section-padding-inline: var(--space-6);
+  --component-form-section-padding-block: var(--space-6);
+  --component-form-section-background: var(--component-card-background);
+  --component-form-section-border: var(--component-card-border);
+  --component-form-section-shadow: var(--component-card-shadow);
+  --component-form-label-color: var(--color-text-primary);
+  --component-form-label-weight: var(--font-weight-medium);
+  --component-form-helper-color: var(--color-text-primary);
+  --component-form-field-gap: var(--space-3);
+  --component-form-field-border: var(--component-input-border);
+  --component-form-actions-background: color-mix(
+    in oklab,
+    var(--component-card-background) 90%,
+    transparent 10%
+  );
+  --component-form-callout-background: color-mix(
+    in oklab,
+    var(--color-primary) 12%,
+    var(--component-card-background) 88%
+  );
+  --component-form-callout-border: color-mix(in oklab, var(--color-primary) 28%, transparent 72%);
+  --component-form-callout-icon-bg: color-mix(in oklab, var(--color-primary) 22%, transparent 78%);
+  --component-form-callout-icon-color: var(--color-primary);
+
+  --component-card-variant-header-background: var(--component-card-background);
+  --component-card-variant-header-border: var(--component-card-border);
+  --component-card-variant-header-shadow: var(--shadow-none);
+
+  --component-card-variant-filter-background: var(--component-card-background);
+  --component-card-variant-filter-border: var(--component-card-border);
+  --component-card-variant-filter-shadow: var(--shadow-none);
+
+  --component-card-variant-table-background: var(--component-card-background);
+  --component-card-variant-table-border: var(--component-card-border);
+  --component-card-variant-table-shadow: var(--shadow-none);
+
+  --component-card-variant-pagination-background: var(--component-card-background);
+  --component-card-variant-pagination-border: var(--component-card-border);
+  --component-card-variant-pagination-shadow: var(--shadow-none);
+
+  --component-button-radius: var(--radius-md);
+  --component-button-gap: var(--space-2);
+  --component-button-font-weight: 600;
+  --component-button-height-sm: 2.25rem;
+  --component-button-height-md: 2.5rem;
+  --component-button-height-lg: 2.75rem;
+  --component-button-padding-inline-sm: var(--space-4);
+  --component-button-padding-inline-md: var(--space-5);
+  --component-button-padding-inline-lg: var(--space-6);
+  --component-button-padding-block: calc(var(--space-2));
+  --component-button-primary-bg: var(--color-primary);
+  --component-button-primary-fg: #ffffff;
+  --component-button-primary-hover-bg: color-mix(in oklab, var(--color-primary) 88%, black 12%);
+  --component-button-destructive-bg: var(--color-danger);
+  --component-button-destructive-fg: #ffffff;
+  --component-button-destructive-hover-bg: color-mix(in oklab, var(--color-danger) 85%, black 15%);
+  --component-button-secondary-bg: var(--color-accent);
+  --component-button-secondary-fg: var(--color-text-primary);
+  --component-button-secondary-hover-bg: color-mix(in oklab, var(--color-accent) 85%, black 15%);
+  --component-button-outline-border: var(--color-border-subtle);
+
+  --component-button-cta-bg: color-mix(in oklab, var(--color-primary) 82%, white 18%);
+  --component-button-cta-fg: var(--color-text-on-dark);
+  --component-button-cta-hover-bg: color-mix(
+    in oklab,
+    var(--component-button-cta-bg) 88%,
+    black 12%
+  );
+  --component-button-cta-border: color-mix(in oklab, var(--color-primary) 25%, transparent 75%);
+  --component-button-cta-shadow: 0 10px 18px -14px
+    color-mix(in oklab, var(--color-primary) 42%, transparent);
+  --component-button-cta-hover-shadow: 0 14px 24px -16px
+    color-mix(in oklab, var(--color-primary) 48%, transparent);
+  --component-button-cta-focus-ring: color-mix(in oklab, var(--color-primary) 58%, white 42%);
+  --component-button-cta-radius: var(--component-button-radius);
+
+  --component-button-cta-secondary-bg: color-mix(
+    in oklab,
+    var(--component-card-background) 88%,
+    var(--color-primary-soft) 12%
+  );
+  --component-button-cta-secondary-fg: color-mix(in oklab, var(--color-primary) 58%, black 42%);
+  --component-button-cta-secondary-hover-bg: color-mix(
+    in oklab,
+    var(--component-card-background) 74%,
+    var(--color-primary-soft) 26%
+  );
+  --component-button-cta-secondary-border: color-mix(
+    in oklab,
+    var(--color-primary) 20%,
+    transparent 80%
+  );
+
+  --component-button-bulk-bg: color-mix(
+    in oklab,
+    var(--color-muted) 70%,
+    var(--component-card-background) 30%
+  );
+  --component-button-bulk-fg: var(--color-text-primary);
+  --component-button-bulk-hover-bg: color-mix(
+    in oklab,
+    var(--color-primary-soft) 25%,
+    var(--component-button-bulk-bg) 75%
+  );
+
+  --component-badge-radius: var(--radius-pill);
+  --component-badge-padding-inline: var(--space-3);
+  --component-badge-padding-block: calc(var(--space-1));
+  --component-badge-font-size: var(--font-size-xs);
+  --badge-blue: color-mix(in oklab, var(--color-primary) 70%, white 30%);
+  --badge-blue-foreground: var(--color-text-on-dark);
+  --badge-green: var(--color-success);
+  --badge-green-foreground: var(--color-text-on-dark);
+  --badge-purple: var(--brand-blue-500);
+  --badge-purple-foreground: var(--color-text-on-dark);
+
+  --component-table-surface: var(--color-surface-raised);
+  --component-table-border: var(--color-border-subtle);
+  --component-table-header-bg: var(--color-surface-subtle);
+  --component-table-header-fg: var(--color-text-primary);
+  --component-table-row-hover: rgba(0, 0, 0, 0.06);
+  --component-table-row-selected: var(--color-primary-soft);
+  --component-table-cell-padding-inline: var(--space-5);
+  --component-table-cell-padding-block: var(--space-3);
+  --component-table-radius: var(--radius-lg);
+  --component-table-header-height: 3.5rem;
+  --component-table-row-height: auto;
+  --component-table-shadow: var(--shadow-xs);
+
+  --component-input-height: 2.75rem;
+  --component-input-radius: var(--radius-md);
+  --component-input-border: var(--component-button-outline-border);
+  --component-input-background: var(--color-surface-raised);
+  --component-input-foreground: var(--color-text-primary);
+  --component-input-placeholder: rgba(0, 0, 0, 0.4);
+  --component-input-shadow: var(--shadow-xs);
+  --component-input-focus-ring: var(--color-primary);
+  --component-input-disabled-background: var(--color-muted);
+  --component-input-disabled-foreground: rgba(0, 0, 0, 0.4);
+}
+
+.dark,
+[data-theme="dark"] {
+  /*
+   * Minimal dark palette - only 3 surface levels
+   * All neutrals are pure gray (no color tint)
+   */
+  --color-surface-base: #121212;
+  --color-surface-raised: #1a1a1a;
+  --color-surface-subtle: #222222;
+  --color-surface-inverse: #ffffff;
+
+  /* Text - pure white only, no gray */
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #ffffff;
+  --color-text-on-dark: #ffffff;
+
+  /* Borders - white with low opacity */
+  --color-border-subtle: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.12);
+
+  /* Single accent color - blue */
+  --color-primary: var(--brand-blue-600);
+  --color-primary-strong: var(--brand-blue-400);
+  --color-primary-soft: #102a56;
+
+  /* Status colors - muted versions */
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+
+  /* Muted/accent same as subtle surface */
+  --color-muted: #222222;
+  --color-accent: #222222;
+
+  /* Cards - all same background */
+  --component-card-background: var(--color-surface-raised);
+  --component-card-foreground: var(--color-text-primary);
+  --component-card-border: var(--color-border-subtle);
+  --component-card-shadow: none;
+
+  --component-card-variant-header-background: var(--color-surface-raised);
+  --component-card-variant-header-border: var(--color-border-subtle);
+  --component-card-variant-header-shadow: none;
+
+  --component-card-variant-filter-background: var(--color-surface-raised);
+  --component-card-variant-filter-border: var(--color-border-subtle);
+  --component-card-variant-filter-shadow: none;
+
+  --component-card-variant-table-background: var(--color-surface-raised);
+  --component-card-variant-table-border: var(--color-border-subtle);
+  --component-card-variant-table-shadow: none;
+
+  --component-card-variant-pagination-background: var(--color-surface-raised);
+  --component-card-variant-pagination-border: var(--color-border-subtle);
+  --component-card-variant-pagination-shadow: none;
+
+  /* Buttons */
+  --component-button-primary-bg: var(--brand-blue-600);
+  --component-button-primary-hover-bg: var(--brand-blue-700);
+  --component-button-secondary-bg: var(--color-surface-subtle);
+  --component-button-secondary-fg: var(--color-text-primary);
+  --component-button-secondary-hover-bg: #2a2a2a;
+
+  /* Table */
+  --component-table-surface: var(--color-surface-raised);
+  --component-table-border: var(--color-border-subtle);
+  --component-table-header-bg: var(--color-surface-subtle);
+  --component-table-header-fg: var(--color-text-primary);
+  --component-table-row-hover: rgba(255, 255, 255, 0.08);
+  --component-table-row-selected: color-mix(in oklab, var(--color-primary) 14%, transparent);
+
+  /* Form callouts */
+  --component-form-callout-background: color-mix(in oklab, var(--color-primary) 8%, transparent);
+  --component-form-callout-border: color-mix(in oklab, var(--color-primary) 20%, transparent);
+  --component-form-callout-icon-bg: color-mix(in oklab, var(--color-primary) 15%, transparent);
+  --component-form-callout-icon-color: var(--color-primary);
+
+  /* Badges */
+  --badge-blue: var(--color-primary);
+  --badge-blue-foreground: #ffffff;
+  --badge-green: var(--color-success);
+  --badge-green-foreground: #ffffff;
+  --badge-purple: var(--brand-blue-400);
+  --badge-purple-foreground: #ffffff;
+
+  /* Inputs - slightly darker than card */
+  --component-input-background: var(--color-surface-base);
+  --component-input-border: var(--color-border-strong);
+  --component-input-placeholder: rgba(255, 255, 255, 0.4);
+  --component-input-disabled-background: var(--color-surface-subtle);
+  --component-input-disabled-foreground: rgba(255, 255, 255, 0.4);
+
+  /* CTA Buttons */
+  --component-button-cta-bg: var(--brand-blue-600);
+  --component-button-cta-fg: #ffffff;
+  --component-button-cta-hover-bg: var(--brand-blue-700);
+  --component-button-cta-border: transparent;
+  --component-button-cta-shadow: none;
+  --component-button-cta-hover-shadow: none;
+  --component-button-cta-focus-ring: var(--color-primary);
+  --component-button-cta-radius: var(--component-button-radius);
+
+  --component-button-cta-secondary-bg: var(--color-surface-subtle);
+  --component-button-cta-secondary-fg: var(--color-text-primary);
+  --component-button-cta-secondary-hover-bg: #2a2a2a;
+  --component-button-cta-secondary-border: var(--color-border-subtle);
+
+  --component-button-bulk-bg: var(--color-surface-subtle);
+  --component-button-bulk-fg: var(--color-text-primary);
+  --component-button-bulk-hover-bg: #2a2a2a;
+}
+
+/* Map legacy tokens for backwards compatibility */
+:root,
+[data-theme="light"] {
+  --radius: var(--radius-md);
+  --background: var(--color-surface-base);
+  --foreground: var(--color-text-primary);
+  --card: var(--component-card-background);
+  --card-foreground: var(--component-card-foreground);
+  --popover: var(--component-card-background);
+  --popover-foreground: var(--component-card-foreground);
+  --primary: var(--color-primary);
+  --primary-foreground: var(--color-text-on-dark);
+  --secondary: var(--color-muted);
+  --secondary-foreground: var(--color-text-primary);
+  --muted: var(--color-muted);
+  --muted-foreground: var(--color-text-secondary);
+  --accent: var(--color-accent);
+  --accent-foreground: var(--color-text-primary);
+  --destructive: var(--color-danger);
+  --border: var(--color-border-subtle);
+  --input: var(--color-border-subtle);
+  --ring: var(--color-primary-soft);
+  --chart-1: var(--color-chart-1);
+  --chart-2: var(--color-chart-2);
+  --chart-3: var(--color-chart-3);
+  --chart-4: var(--color-chart-4);
+  --chart-5: var(--color-chart-5);
+  --sidebar: var(--color-surface-base);
+  --sidebar-foreground: var(--color-text-primary);
+  --sidebar-primary: var(--color-primary);
+  --sidebar-primary-foreground: var(--color-text-on-dark);
+  --sidebar-accent: var(--color-muted);
+  --sidebar-accent-foreground: var(--color-text-primary);
+  --sidebar-border: var(--color-border-subtle);
+  --sidebar-ring: var(--color-primary-soft);
+}
+
+.dark {
+  --radius: var(--radius-md);
+  --background: var(--color-surface-base);
+  --foreground: var(--color-text-primary);
+  --card: var(--component-card-background);
+  --card-foreground: var(--component-card-foreground);
+  --popover: var(--component-card-background);
+  --popover-foreground: var(--component-card-foreground);
+  --primary: var(--color-primary);
+  --primary-foreground: var(--color-text-on-dark);
+  --secondary: var(--color-muted);
+  --secondary-foreground: var(--color-text-primary);
+  --muted: var(--color-muted);
+  --muted-foreground: var(--color-text-secondary);
+  --accent: var(--color-accent);
+  --accent-foreground: var(--color-text-primary);
+  --destructive: var(--color-danger);
+  --border: var(--component-card-border);
+  --input: var(--component-card-border);
+  --ring: var(--color-primary-soft);
+  --chart-1: var(--color-chart-1);
+  --chart-2: var(--color-chart-2);
+  --chart-3: var(--color-chart-3);
+  --chart-4: var(--color-chart-4);
+  --chart-5: var(--color-chart-5);
+  --sidebar: var(--color-surface-base);
+  --sidebar-foreground: var(--color-text-primary);
+  --sidebar-primary: var(--color-primary);
+  --sidebar-primary-foreground: var(--color-text-on-dark);
+  --sidebar-accent: var(--color-muted);
+  --sidebar-accent-foreground: var(--color-text-primary);
+  --sidebar-border: var(--component-card-border);
+  --sidebar-ring: var(--color-primary-soft);
+}

@@ -1,0 +1,294 @@
+@import "../dashboard/dashboard-theme.css";
+
+@layer components {
+  [data-dashboard="overview"][data-sdk-surface] {
+    /* Adapter-only aliases: core values come from console foundation/dashboard aliases. */
+    --sdk-console-radius: var(--console-radius-control);
+    --sdk-console-border: color-mix(in srgb, var(--console-border-strong) 88%, var(--console-border-soft));
+    --sdk-console-border-soft: color-mix(in srgb, var(--console-border-soft) 90%, transparent);
+    --sdk-console-rail: color-mix(in srgb, var(--console-surface-rail) 88%, var(--console-surface-panel));
+    --sdk-console-stage: color-mix(in srgb, var(--console-surface-stage) 88%, var(--console-surface-panel));
+  }
+
+  [data-dashboard="overview"][data-sdk-surface] {
+    color: var(--dash-text-1);
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-header {
+    background: var(--dash-surface-panel);
+    border: 1px solid var(--sdk-console-border);
+    border-radius: var(--sdk-console-radius);
+    box-shadow: none;
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-header p,
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-header h1 {
+    color: inherit;
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-context-badge {
+    border-color: color-mix(in srgb, var(--dash-border-strong) 74%, var(--dash-border-soft)) !important;
+    background: color-mix(in srgb, var(--dash-surface-panel-alt) 86%, var(--dash-surface-panel)) !important;
+    color: var(--dash-text-2) !important;
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-editorial-tabs-list {
+    border: 1px solid var(--sdk-console-border) !important;
+    background: var(--sdk-console-rail) !important;
+    border-radius: var(--sdk-console-radius) !important;
+    box-shadow: none !important;
+    gap: 0.18rem;
+    padding: 0.18rem !important;
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-editorial-tabs-trigger {
+    border-radius: var(--sdk-console-radius) !important;
+    color: var(--dash-text-2) !important;
+    border: 1px solid transparent !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-editorial-tabs-trigger:hover {
+    color: var(--dash-text-1) !important;
+    background: var(--dash-surface-panel) !important;
+    border-color: var(--sdk-console-border-soft) !important;
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-editorial-tabs-trigger[data-state="active"] {
+    color: var(--dash-text-1) !important;
+    border-color: var(--sdk-console-border) !important;
+    background: var(--dash-surface-panel) !important;
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-editorial-tabs-trigger--language[data-state="active"] {
+    color: #fff !important;
+    border-color: color-mix(in srgb, var(--dash-accent) 22%, var(--dash-border-soft)) !important;
+    background: var(--dash-accent) !important;
+  }
+
+  .dark [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-editorial-tabs-trigger--language[data-state="active"] {
+    color: #fff !important;
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-empty {
+    background: color-mix(in srgb, var(--dash-surface-panel) 92%, var(--dash-surface-panel-alt));
+    border: 1px dashed var(--dash-border-soft);
+    border-radius: var(--dash-radius-md);
+    color: var(--dash-text-2);
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-main-shell {
+    background: var(--dash-surface-panel);
+    border: 1px solid var(--sdk-console-border);
+    border-radius: var(--sdk-console-radius);
+    box-shadow: none;
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-nav-shell {
+    background: var(--sdk-console-stage);
+    border-color: var(--sdk-console-border-soft) !important;
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-content-shell {
+    background: var(--dash-surface-panel);
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-module-button {
+    border: 1px solid transparent;
+    border-radius: var(--sdk-console-radius);
+    color: var(--dash-text-2);
+    background: transparent;
+    transition:
+      background-color 140ms ease,
+      border-color 140ms ease,
+      color 140ms ease;
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-module-button:hover {
+    background: var(--sdk-console-rail);
+    border-color: var(--sdk-console-border-soft);
+    color: var(--dash-text-1);
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-module-button[data-selected="true"] {
+    background: color-mix(in srgb, var(--dash-accent) 6%, var(--dash-surface-panel));
+    border-color: color-mix(in srgb, var(--dash-accent) 24%, var(--sdk-console-border));
+    color: var(--dash-text-1);
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-module-button[data-selected="true"] .sdk-hub-module-index {
+    color: color-mix(in srgb, var(--dash-accent) 86%, var(--dash-text-3));
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-module-button[data-selected="true"] .sdk-hub-module-title {
+    color: var(--dash-accent);
+    padding-left: 0.25rem;
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-module-indicator[data-selected="true"] {
+    background: var(--dash-accent);
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-guide-header {
+    border-bottom: 1px solid var(--dash-border-soft);
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-guide-badge {
+    border-color: color-mix(in srgb, var(--dash-border-strong) 68%, var(--dash-border-soft)) !important;
+    background: color-mix(in srgb, var(--dash-surface-panel-alt) 85%, var(--dash-surface-panel)) !important;
+    color: var(--dash-text-2) !important;
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-docs-button {
+    border: 1px solid var(--sdk-console-border) !important;
+    background: var(--dash-surface-panel) !important;
+    color: var(--dash-text-1) !important;
+    border-radius: var(--sdk-console-radius) !important;
+    box-shadow: none !important;
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-docs-button:hover {
+    background: var(--dash-surface-panel-alt) !important;
+    border-color: var(--dash-border-strong) !important;
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="hub"] .sdk-hub-label {
+    color: var(--dash-text-3);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    line-height: 1.2;
+  }
+
+  /* SDK dialog/editorial shells (View SDK Modal + SDK Integration Dialog + FloatingHelp modal) */
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface^="sdk-"],
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface="help-dialog"] {
+    background: var(--dash-surface-panel) !important;
+    border: 1px solid var(--sdk-console-border) !important;
+    border-radius: calc(var(--sdk-console-radius) + 1px) !important;
+    box-shadow: 0 12px 28px color-mix(in srgb, #000 14%, transparent) !important;
+    color: var(--dash-text-1) !important;
+  }
+
+  .dark [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface^="sdk-"],
+  .dark [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface="help-dialog"] {
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45) !important;
+  }
+
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface^="sdk-"] [data-slot="dialog-title"],
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface="help-dialog"] [data-slot="dialog-title"] {
+    color: var(--dash-text-1);
+    letter-spacing: -0.02em;
+  }
+
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface^="sdk-"] [data-slot="dialog-description"],
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface="help-dialog"] [data-slot="dialog-description"] {
+    color: var(--dash-text-2);
+  }
+
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface^="sdk-"] [data-slot="tabs-list"],
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface="help-dialog"] [data-slot="tabs-list"] {
+    background: var(--sdk-console-rail) !important;
+    border: 1px solid var(--sdk-console-border) !important;
+    border-radius: var(--sdk-console-radius) !important;
+    gap: 0.18rem;
+    padding: 0.18rem;
+  }
+
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface^="sdk-"] [data-slot="tabs-trigger"],
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface="help-dialog"] [data-slot="tabs-trigger"] {
+    color: var(--dash-text-2) !important;
+    border-radius: var(--sdk-console-radius) !important;
+    border: 1px solid transparent !important;
+  }
+
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface^="sdk-"] [data-slot="tabs-trigger"][data-state="active"],
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface="help-dialog"] [data-slot="tabs-trigger"][data-state="active"] {
+    background: var(--dash-surface-panel) !important;
+    border-color: var(--sdk-console-border) !important;
+    color: var(--dash-text-1) !important;
+  }
+
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface^="sdk-"] .sdk-editorial-subpanel,
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface="help-dialog"] .sdk-editorial-subpanel {
+    border: 1px solid var(--sdk-console-border-soft);
+    background: var(--sdk-console-stage);
+    border-radius: var(--sdk-console-radius);
+  }
+
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface^="sdk-"] .sdk-editorial-soft-panel,
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface="help-dialog"] .sdk-editorial-soft-panel {
+    border: 1px solid color-mix(in srgb, var(--dash-accent) 18%, var(--sdk-console-border));
+    background: color-mix(in srgb, var(--dash-accent) 4%, var(--dash-surface-panel));
+    border-radius: var(--sdk-console-radius);
+  }
+
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface^="sdk-"] .sdk-editorial-outline-btn,
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface="help-dialog"] .sdk-editorial-outline-btn {
+    border-radius: var(--sdk-console-radius) !important;
+    border: 1px solid var(--sdk-console-border) !important;
+    background: var(--dash-surface-panel) !important;
+    color: var(--dash-text-1) !important;
+    box-shadow: none !important;
+  }
+
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface^="sdk-"] .sdk-editorial-outline-btn:hover,
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface="help-dialog"] .sdk-editorial-outline-btn:hover {
+    background: var(--dash-surface-panel-alt) !important;
+    border-color: var(--dash-border-strong) !important;
+  }
+
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface^="sdk-"] [data-sdk-code-block="true"],
+  [data-slot="dialog-content"][data-dashboard="overview"][data-sdk-surface="help-dialog"] [data-sdk-code-block="true"] {
+    color: inherit;
+  }
+
+  /* FloatingHelp editorial launcher/list chrome */
+  [data-dashboard="overview"][data-sdk-surface="help-fab"] .sdk-help-tooltip {
+    background: var(--dash-surface-panel);
+    color: var(--dash-text-1);
+    border: 1px solid var(--sdk-console-border);
+    border-radius: var(--sdk-console-radius);
+    box-shadow: 0 8px 20px color-mix(in srgb, #000 10%, transparent);
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="help-fab"] .sdk-help-popover {
+    border-radius: calc(var(--sdk-console-radius) + 1px);
+    border: 1px solid var(--sdk-console-border);
+    background: var(--dash-surface-panel);
+    box-shadow: 0 10px 24px color-mix(in srgb, #000 10%, transparent);
+    backdrop-filter: none;
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="help-fab"] .sdk-help-item {
+    border: 1px solid var(--sdk-console-border-soft);
+    background: var(--dash-surface-panel);
+    border-radius: var(--sdk-console-radius);
+    color: var(--dash-text-1);
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="help-fab"] .sdk-help-item:hover {
+    background: var(--sdk-console-rail);
+    border-color: var(--sdk-console-border);
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="help-fab"] .sdk-help-item-icon {
+    color: var(--dash-accent);
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="help-fab"] .sdk-help-fab,
+  [data-dashboard="overview"][data-sdk-surface="help-fab"] [data-slot="floating-help-fab"] {
+    border: 1px solid color-mix(in srgb, var(--dash-accent) 28%, var(--dash-border-soft));
+    background: var(--dash-accent);
+    color: #fff;
+    border-radius: 9999px !important;
+    box-shadow: 0 10px 20px color-mix(in srgb, var(--dash-accent) 16%, transparent);
+  }
+
+  [data-dashboard="overview"][data-sdk-surface="help-fab"] .sdk-help-fab:hover,
+  [data-dashboard="overview"][data-sdk-surface="help-fab"] [data-slot="floating-help-fab"]:hover {
+    background: color-mix(in srgb, var(--dash-accent) 92%, black);
+  }
+}
