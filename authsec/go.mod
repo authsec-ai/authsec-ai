@@ -7,7 +7,6 @@ require (
 	github.com/authsec-ai/sharedmodels v1.3.0
 	github.com/didip/tollbooth/v7 v7.0.2
 	github.com/fxamacker/cbor/v2 v2.9.0
-	github.com/gin-contrib/cors v1.7.6
 	github.com/gin-contrib/gzip v1.2.5
 	github.com/gin-gonic/gin v1.11.0
 	github.com/go-ldap/ldap/v3 v3.4.11
