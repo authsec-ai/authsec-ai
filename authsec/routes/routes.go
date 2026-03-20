@@ -686,7 +686,7 @@ func SetupRoutes(
 		// ────────────────────────────────────────────────────
 		// Delegation Policy CRUD (admin-authenticated)
 		// ────────────────────────────────────────────────────
-		delegationPolicies := uflow.Group("/delegation-policies")
+		delegationPolicies = uflow.Group("/delegation-policies")
 		delegationPolicies.Use(
 			middlewares.AuthMiddleware(),
 			middlewares.Require("admin", "access"),
@@ -703,7 +703,7 @@ func SetupRoutes(
 		// ────────────────────────────────────────────────────
 		// SDK Token Pull (public, authenticated by client_id)
 		// ────────────────────────────────────────────────────
-		sdk := uflow.Group("/sdk")
+		sdk = uflow.Group("/sdk")
 		{
 			sdk.GET("/delegation-token", sdkTokenController.GetDelegationToken)
 		}
