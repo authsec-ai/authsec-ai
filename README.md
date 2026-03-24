@@ -2,7 +2,9 @@
 
 [Website](https://authsec.ai) · [Documentation](https://authsec.ai/docs) · [Blog](https://authsec.ai/blogs)
 
-AuthSec is an open-source, agent-first identity and access management platform. It is built for the age of autonomous AI — where agents need to authenticate without browsers, delegate user permissions, talk to each other securely, and plug into MCP servers — while still covering every enterprise IAM need (SSO, RBAC, passkeys, SCIM, and more).
+Agent-first Open Source Identity layer for Agents and Autonomous AI.
+
+It is built for the age of agents and autonomous AI — where agents need to authenticate without browsers, delegate user permissions, talk to each other securely, and plug into MCP servers — while still covering every enterprise IAM need (SSO, RBAC, passkeys, SCIM, and more).
 
 **This repository contains the backend service and deployment scripts.** The UI lives in a separate repository: [authsec-ai/Authsec-ui](https://github.com/authsec-ai/Authsec-ui).
 
@@ -16,11 +18,11 @@ Modern AI agents can't open a browser login page. AuthSec supports **CIBA (Clien
 
 With CIBA:
 
-- An agent initiates an auth request on behalf of a user
-- The user receives an out-of-band prompt (voice call, push notification, SMS) to approve
+- An agent initiates an auth request on behalf of a user using a channel for example voice
+- The user receives an out-of-band prompt (voice call, push notification, SMS) to approve on a mobile app
 - The agent receives tokens once the user approves — no browser redirect, no UI required
 
-This powers voice-activated agents: a user speaks a command, the agent triggers CIBA, the user confirms by voice, and the agent gets a scoped access token — all without touching a browser.
+This powers voice-activated agents or other form of agents which do not need a web browser to operate: a user speaks a command, the agent triggers CIBA, the user confirms by voice, and the agent gets a scoped access token — all without a browser.
 
 > **Resources:** [Documentation](https://authsec.ai/docs) · Demo Video *(coming soon)* · [Blog](https://authsec.ai/blogs)
 
