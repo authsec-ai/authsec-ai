@@ -1,4 +1,4 @@
-# AuthSec — Agent-First Identity & Access Management
+# Agent-first Open Source Identity layer for Agents and Autonomous AI.
 
 [Website](https://authsec.ai) · [Documentation](https://authsec.ai/docs) · [Blog](https://authsec.ai/blogs)
 
@@ -9,6 +9,52 @@ It is built for the age of agents and autonomous AI — where agents need to aut
 **This repository contains the backend service and deployment scripts.** The UI lives in a separate repository: [authsec-ai/Authsec-ui](https://github.com/authsec-ai/Authsec-ui).
 
 ---
+
+
+## Get Started
+
+### Option A — Docker Compose (Recommended)
+
+The fastest way to run the full AuthSec stack locally or on a server.
+
+**Prerequisites:** Docker Engine 24.0+, Docker Compose v2.20+, 4 GB RAM
+
+```bash
+git clone https://github.com/authsec-ai/authsec-ai.git
+cd authsec-ai/scripts
+bash setup.sh
+```
+
+Open **<http://localhost>** once the script finishes.
+
+#### What does `setup.sh` install?
+
+The script brings up a complete, production-ready stack:
+
+| Service | What it does |
+| --- | --- |
+| **AuthSec backend** | Go binary — auth flows, RBAC, OIDC, SCIM, CIBA, SPIFFE, MCP, migration |
+| **[AuthSec UI](https://github.com/authsec-ai/Authsec-ui)** | React 19 admin and end-user portal (separate repo, image pulled automatically) |
+| **Ory Hydra** | Standards-compliant OAuth 2.0 / OIDC / SAML server |
+| **PostgreSQL** | Master database + dynamic per-tenant databases |
+| **Redis** | Session cache and rate limiting |
+| **HashiCorp Vault** | Secrets storage for OIDC provider credentials |
+| **Nginx** | Reverse proxy with optional TLS termination |
+
+The script automatically:
+
+1. Checks that Docker and Compose are installed
+2. Asks for your deployment type and admin credentials
+3. Generates all secrets (JWT keys, encryption keys, Hydra system/cookie secrets)
+4. Writes a `.env` file
+5. Pulls images and starts all services
+6. Runs the master database migration
+7. Creates your first admin account
+
+For manual setup, custom domains, TLS, and production hardening — see [scripts/README.md](scripts/README.md).
+
+---
+
 
 ## What AuthSec Solves
 
@@ -63,51 +109,7 @@ Full enterprise SSO for your users and workforce:
 
 ---
 
-## Get Started
-
-### Option A — Docker Compose (Recommended)
-
-The fastest way to run the full AuthSec stack locally or on a server.
-
-**Prerequisites:** Docker Engine 24.0+, Docker Compose v2.20+, 4 GB RAM
-
-```bash
-git clone https://github.com/authsec-ai/authsec-ai.git
-cd authsec-ai/scripts
-bash setup.sh
-```
-
-Open **<http://localhost>** once the script finishes.
-
-#### What does `setup.sh` install?
-
-The script brings up a complete, production-ready stack:
-
-| Service | What it does |
-| --- | --- |
-| **AuthSec backend** | Go binary — auth flows, RBAC, OIDC, SCIM, CIBA, SPIFFE, MCP, migration |
-| **[AuthSec UI](https://github.com/authsec-ai/Authsec-ui)** | React 19 admin and end-user portal (separate repo, image pulled automatically) |
-| **Ory Hydra** | Standards-compliant OAuth 2.0 / OIDC / SAML server |
-| **PostgreSQL** | Master database + dynamic per-tenant databases |
-| **Redis** | Session cache and rate limiting |
-| **HashiCorp Vault** | Secrets storage for OIDC provider credentials |
-| **Nginx** | Reverse proxy with optional TLS termination |
-
-The script automatically:
-
-1. Checks that Docker and Compose are installed
-2. Asks for your deployment type and admin credentials
-3. Generates all secrets (JWT keys, encryption keys, Hydra system/cookie secrets)
-4. Writes a `.env` file
-5. Pulls images and starts all services
-6. Runs the master database migration
-7. Creates your first admin account
-
-For manual setup, custom domains, TLS, and production hardening — see [scripts/README.md](scripts/README.md).
-
----
-
-### Option B — Run Individual Components
+## Run Individual Components instead of a single script
 
 If you want to develop or run only specific parts of the stack:
 
