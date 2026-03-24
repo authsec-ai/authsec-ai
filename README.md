@@ -13,7 +13,7 @@ It is built for the age of agents and autonomous AI — where agents need to aut
 
 ## Get Started
 
-### Option A — Docker Compose (Recommended)
+### Docker Compose (Recommended)
 
 The fastest way to run the full AuthSec stack locally or on a server.
 
