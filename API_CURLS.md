@@ -15,10 +15,10 @@ USER_ID="<user-uuid>"
 
 ```bash
 # OpenID Configuration
-curl "$BASE/.well-known/openid-configuration"
+curl "$BASE/authsec/.well-known/openid-configuration"
 
 # JWKS (public keys)
-curl "$BASE/.well-known/jwks.json"
+curl "$BASE/authsec/.well-known/jwks.json"
 ```
 
 ---
@@ -2447,16 +2447,16 @@ POLICY_ID="<policy-uuid>"
 curl "$BASE/authsec/spire/health"
 ```
 
-### OIDC Discovery  `GET /authsec/spire/.well-known/openid-configuration`
+### OIDC Discovery  `GET /authsec/.well-known/openid-configuration`
 
 ```bash
-curl "$BASE/authsec/spire/.well-known/openid-configuration"
+curl "$BASE/authsec/.well-known/openid-configuration"
 ```
 
-### JWK Set  `GET /authsec/spire/.well-known/jwks.json`
+### JWK Set  `GET /authsec/.well-known/jwks.json`
 
 ```bash
-curl "$BASE/authsec/spire/.well-known/jwks.json"
+curl "$BASE/authsec/.well-known/jwks.json"
 ```
 
 ---

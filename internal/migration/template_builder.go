@@ -1,6 +1,7 @@
 package migration
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"time"
@@ -17,6 +18,7 @@ var requiredTables = []string{
 	"user_scopes", "client_roles", "credentials", "scopes",
 	"services", "projects", "group_roles", "client_resources",
 	"client_scopes", "client_groups", "user_roles",
+	"delegation_policies", "delegation_tokens",
 }
 
 // requiredColumns maps table -> columns that must exist after incremental migrations.
@@ -34,9 +36,19 @@ var requiredConstraints = []string{
 // SetupTenantTemplate drops and recreates the golden template DB, runs all
 // tenant migrations on it, then verifies the schema 3 times. If setup
 // succeeds, TemplateReady is set to true.
-func SetupTenantTemplate(tenantMigrationsDir string) error {
+// masterDB is an optional raw connection to the master database used to clear
+// stale migration logs for the synthetic template tenant before rebuilding.
+func SetupTenantTemplate(tenantMigrationsDir string, masterDB ...*sql.DB) error {
 	start := time.Now()
 	log.Printf("[Migration] Template setup: starting golden template build")
+
+	// Phase 0: Clear stale migration logs for the synthetic tenant so that
+	// all tenant migrations run fresh on the new template DB.
+	if len(masterDB) > 0 && masterDB[0] != nil {
+		if err := clearSyntheticTenantLogs(masterDB[0]); err != nil {
+			log.Printf("[Migration] Template setup: could not clear stale migration logs: %v", err)
+		}
+	}
 
 	if err := recreateTemplateDB(); err != nil {
 		return fmt.Errorf("phase 1 (recreate): %w", err)
@@ -180,5 +192,21 @@ func verifyTemplateSchema(attempt int) error {
 	}
 
 	log.Printf("[Migration] Template verify %d: %d tables, %d permissions — OK", attempt, tableCount, permCount)
+	return nil
+}
+
+// clearSyntheticTenantLogs removes migration_logs entries for the synthetic
+// template tenant so that a fresh template build re-runs all migrations.
+func clearSyntheticTenantLogs(masterDB *sql.DB) error {
+	result, err := masterDB.Exec(
+		"DELETE FROM migration_logs WHERE db_type = 'tenant' AND tenant_id = $1",
+		syntheticTenantID,
+	)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n > 0 {
+		log.Printf("[Migration] Template setup: cleared %d stale migration log entries for synthetic tenant", n)
+	}
 	return nil
 }

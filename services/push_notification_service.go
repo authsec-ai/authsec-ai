@@ -135,6 +135,49 @@ func (s *PushNotificationService) TestPushNotification(deviceToken string) error
 	return s.SendAuthRequest(deviceToken, "test-auth-req", "Test push notification", "test@example.com")
 }
 
+// SendActionApproval sends a push notification for agent action approval
+func (s *PushNotificationService) SendActionApproval(
+	deviceToken string,
+	actionReqID string,
+	bindingMessage string,
+	userEmail string,
+	action string,
+	resource string,
+	riskScore int,
+	riskLevel string,
+) error {
+	if s.httpClient == nil {
+		return fmt.Errorf("push notification service not initialized")
+	}
+
+	title := fmt.Sprintf("Agent Action: %s", riskLevel)
+	body := bindingMessage
+	if body == "" {
+		body = fmt.Sprintf("Agent wants to %s on %s", action, resource)
+	}
+
+	message := ExpoPushMessage{
+		To:             deviceToken,
+		Title:          title,
+		Body:           body,
+		Sound:          "default",
+		Priority:       "high",
+		CategoryId:     "agent_action",
+		MutableContent: true,
+		Data: map[string]string{
+			"action_req_id": actionReqID,
+			"type":          "agent_action",
+			"action":        action,
+			"resource":      resource,
+			"risk_score":    fmt.Sprintf("%d", riskScore),
+			"risk_level":    riskLevel,
+			"user_email":    userEmail,
+		},
+	}
+
+	return s.sendExpoPush([]ExpoPushMessage{message})
+}
+
 // sendExpoPush sends messages to Expo Push API
 func (s *PushNotificationService) sendExpoPush(messages []ExpoPushMessage) error {
 	jsonData, err := json.Marshal(messages)

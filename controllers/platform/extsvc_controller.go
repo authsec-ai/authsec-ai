@@ -367,11 +367,25 @@ func (ctl *ExternalServiceController) GetExternalServiceCredentials(c *gin.Conte
 	}
 	serviceID := c.Param("id")
 
-	manager := services.NewExternalServiceManager(repositories.NewExternalServiceRepository(tenantDB), nil)
-	svc, err := manager.Get(serviceID, clientID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "service not found"})
-		return
+	repo := repositories.NewExternalServiceRepository(tenantDB)
+	var svc *repositories.ExternalService
+
+	// SPIFFE JWT-SVID agents may access agent-accessible services directly,
+	// bypassing client ownership checks.
+	authMethod, _ := c.Get("auth_method")
+	if authMethod == "spiffe-jwt-svid" {
+		svc, err = repo.GetByID(serviceID)
+		if err != nil || !svc.AgentAccessible {
+			c.JSON(http.StatusNotFound, gin.H{"error": "service not found"})
+			return
+		}
+	} else {
+		manager := services.NewExternalServiceManager(repo, nil)
+		svc, err = manager.Get(serviceID, clientID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "service not found"})
+			return
+		}
 	}
 
 	vaultClient, err := ctl.getVaultClient()

@@ -189,4 +189,5 @@ type GetAuthURLInput struct {
 // GetAuthURLResponse represents the output containing the constructed Auth URL
 type GetAuthURLResponse struct {
 	AuthURL string `json:"auth_url"`
+	State   string `json:"state"`
 }

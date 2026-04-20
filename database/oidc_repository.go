@@ -353,7 +353,7 @@ func (r *OIDCUserIdentityRepository) CreateIdentity(identity *models.OIDCUserIde
 	query := `
 		INSERT INTO oidc_user_identities (tenant_id, user_id, provider_name, provider_user_id,
 		                                  email, profile_data, created_at, updated_at, last_login_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $7)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (provider_name, provider_user_id) DO UPDATE
 		SET email = EXCLUDED.email,
 		    profile_data = EXCLUDED.profile_data,
@@ -377,6 +377,7 @@ func (r *OIDCUserIdentityRepository) CreateIdentity(identity *models.OIDCUserIde
 		identity.ProfileData,
 		identity.CreatedAt,
 		identity.UpdatedAt,
+		identity.CreatedAt, // $9 = last_login_at (same as created_at on first insert)
 	).Scan(&identity.ID)
 
 	return err

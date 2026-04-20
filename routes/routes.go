@@ -42,6 +42,7 @@ import (
 	sharedCtrl "github.com/authsec-ai/authsec/controllers/shared"
 	"github.com/authsec-ai/authsec/handlers"
 	"github.com/authsec-ai/authsec/middlewares"
+	"github.com/authsec-ai/authsec/internal/spire"
 	sdkmgrSvc "github.com/authsec-ai/authsec/services/sdkmgr"
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
@@ -56,6 +57,7 @@ func SetupRoutes(
 	webAuthnHandler *handlers.WebAuthnHandler,
 	adminWebAuthnHandler *handlers.AdminWebAuthnHandler,
 	endUserWebAuthnHandler *handlers.EndUserWebAuthnHandler,
+	spireDeps *spire.Dependencies,
 ) {
 	// ────────────────────────────────────────────────────────
 	// CORS is already applied by the caller (main.go)
@@ -151,6 +153,12 @@ func SetupRoutes(
 		log.Fatalf("Failed to initialize tenant CIBA auth controller: %v", err)
 	}
 
+	// Initialize Agent Action Guard controller (human-in-the-loop approvals)
+	agentActionController, err := platformCtrl.NewAgentActionController()
+	if err != nil {
+		log.Fatalf("Failed to initialize agent action controller: %v", err)
+	}
+
 	tenantTOTPController := userCtrl.NewTenantTOTPController()
 
 	spiffeDelegateController, err := platformCtrl.NewSpiffeDelegateController()
@@ -159,14 +167,27 @@ func SetupRoutes(
 	}
 
 	delegationPolicyCtrl := platformCtrl.NewDelegationPolicyController()
-	agentCtrl := platformCtrl.NewAgentController()
 	sdkTokenCtrl := platformCtrl.NewSDKTokenController()
 
-	// ────────────────────────────────────────────────────────
-	// Well-known OIDC discovery – must remain at root (RFC 8414)
-	// ────────────────────────────────────────────────────────
-	r.GET("/.well-known/openid-configuration", spiffeDelegateController.OIDCDiscovery)
-	r.GET("/.well-known/jwks.json", spiffeDelegateController.GetJWKS)
+	// ── Inject merged SPIRE services into controllers that need them ──
+	if spireDeps != nil {
+		// Agent controllers (admin + platform)
+		agentController.SetJWTSVIDService(spireDeps.JWTSVIDSvc)
+
+		platformAgentController := platformCtrl.NewAgentController()
+		platformAgentController.SetServices(spireDeps.WorkloadEntrySvc, spireDeps.JWTSVIDSvc)
+		_ = platformAgentController // used in platform routes below
+
+		// Delegation policy controllers (admin + platform)
+		delegationPolicyController.SetServices(spireDeps.WorkloadEntrySvc, spireDeps.JWTSVIDSvc, spireDeps.AgentSvc)
+		delegationPolicyCtrl.SetServices(spireDeps.WorkloadEntrySvc, spireDeps.JWTSVIDSvc, spireDeps.AgentSvc)
+
+		// PKI provisioning — inject into tenant + OIDC controllers
+		if spireDeps.PKIProvisioningSvc != nil {
+			userController.SetPKIService(spireDeps.PKIProvisioningSvc)
+			oidcController.SetPKIService(spireDeps.PKIProvisioningSvc)
+		}
+	}
 
 	// Catch-all OPTIONS handler so CORS preflight requests are answered for every
 	// path regardless of which method-specific route is registered.
@@ -174,15 +195,17 @@ func SetupRoutes(
 		c.Status(http.StatusNoContent)
 	})
 
-	// Backward-compat: user-flow previously exposed this at the bare root so that
-	// existing webauthn-service clients did not need to change their URLs.
-	r.POST("/webauthn/mfa/loginStatus", userController.WebAuthnMFALoginStatus)
-
 	// ════════════════════════════════════════════════════════
 	// ALL ROUTES UNDER /authsec
 	// ════════════════════════════════════════════════════════
 	authsec := r.Group("/authsec")
 	{
+		// ────────────────────────────────────────────────────────
+		// Well-known OIDC discovery (formerly spire-headless)
+		// ────────────────────────────────────────────────────────
+		authsec.GET("/.well-known/openid-configuration", spiffeDelegateController.OIDCDiscovery)
+		authsec.GET("/.well-known/jwks.json", spiffeDelegateController.GetJWKS)
+
 		// ────────────────────────────────────────────────────
 		// WebAuthn routes  (/authsec/webauthn/*)
 		// Served under /authsec/webauthn (formerly webauthn-service).
@@ -347,7 +370,15 @@ func SetupRoutes(
 				deviceAuth.POST("/code", deviceAuthController.RequestDeviceCode)
 				deviceAuth.POST("/token", deviceAuthController.PollDeviceToken)
 				deviceAuth.GET("/activate/info", deviceAuthController.GetActivationInfo)
-				deviceAuth.POST("/verify", middlewares.AuthMiddleware(), deviceAuthController.VerifyDeviceCode)
+				// /verify: public — activation page checks user_code before login
+				deviceAuth.POST("/verify", deviceAuthController.VerifyUserCode)
+				// /authorize: requires auth — browser posts approval/denial after login
+				deviceAuth.POST("/authorize", middlewares.AuthMiddleware(), deviceAuthController.AuthorizeDevice)
+				// /authorize-oidc: public — for end-user shield login via OIDC
+				// Takes {user_code, oidc_code, state} → exchanges OIDC code for identity → authorizes device
+				deviceAuth.POST("/authorize-oidc", deviceAuthController.AuthorizeDeviceWithOIDC)
+				// /verify-legacy: old authenticated verify endpoint (backwards compat)
+				deviceAuth.POST("/verify-legacy", middlewares.AuthMiddleware(), deviceAuthController.VerifyDeviceCode)
 			}
 
 			// Voice Authentication
@@ -501,12 +532,6 @@ func SetupRoutes(
 		// ────────────────────────────────────────────────────
 		// Delegation policies
 		// ────────────────────────────────────────────────────
-		delegationAdmin := uflow.Group("/admin/me")
-		delegationAdmin.Use(middlewares.AuthMiddleware(), amMiddlewares.ValidateTenantFromToken())
-		{
-			delegationAdmin.GET("/roles-permissions", delegationPolicyCtrl.GetMyRolesAndPermissions)
-		}
-
 		delegationPolicies := uflow.Group("/delegation-policies")
 		delegationPolicies.Use(
 			middlewares.AuthMiddleware(),
@@ -519,24 +544,6 @@ func SetupRoutes(
 			delegationPolicies.GET("/:id", delegationPolicyCtrl.GetDelegationPolicy)
 			delegationPolicies.PUT("/:id", delegationPolicyCtrl.UpdateDelegationPolicy)
 			delegationPolicies.DELETE("/:id", delegationPolicyCtrl.DeleteDelegationPolicy)
-		}
-
-		// ────────────────────────────────────────────────────
-		// AI agents (SPIRE identity + JWT-SVID delegation)
-		// ────────────────────────────────────────────────────
-		agents := uflow.Group("/admin/agents")
-		agents.Use(
-			middlewares.AuthMiddleware(),
-			middlewares.Require("admin", "access"),
-			amMiddlewares.ValidateTenantFromToken(),
-		)
-		{
-			agents.GET("", agentCtrl.ListAgents)
-			agents.GET("/:id", agentCtrl.GetAgent)
-			agents.POST("/:id/provision-identity", agentCtrl.ProvisionIdentity)
-			agents.DELETE("/:id/revoke-identity", agentCtrl.RevokeIdentity)
-			agents.POST("/:id/delegate-token", agentCtrl.DelegateToken)
-			agents.POST("/:id/revoke-token", sdkTokenCtrl.RevokeDelegationToken)
 		}
 
 		// SDK public endpoint — no auth middleware (client_id is the identity)
@@ -683,29 +690,55 @@ func SetupRoutes(
 			scimAdmin.DELETE("/Users/:id", scimAdminController.DeleteAdminUser)
 		}
 
-		// ────────────────────────────────────────────────────
-		// Delegation Policy CRUD (admin-authenticated)
-		// ────────────────────────────────────────────────────
-		delegationPolicies = uflow.Group("/delegation-policies")
-		delegationPolicies.Use(
+		// ========================================
+		// Agent Action Guard routes (Human-in-the-Loop approvals for AI agents)
+		// ========================================
+
+		// Agent-facing endpoints (JWT auth required)
+		agentActions := uflow.Group("/agent/actions")
+		agentActions.Use(middlewares.AuthMiddleware())
+		{
+			agentActions.POST("/evaluate", agentActionController.EvaluateAction)
+			agentActions.GET("/status", agentActionController.PollActionStatus)
+			agentActions.POST("/respond", agentActionController.RespondToAction)
+			agentActions.GET("/pending", agentActionController.GetPendingActions)
+		}
+
+		// Risk policy admin endpoints
+		agentGuardAdmin := uflow.Group("/admin/risk-policies")
+		agentGuardAdmin.Use(
 			middlewares.AuthMiddleware(),
 			middlewares.Require("admin", "access"),
 			amMiddlewares.ValidateTenantFromToken(),
 		)
 		{
-			delegationPolicies.POST("", delegationPolicyController.CreateDelegationPolicy)
-			delegationPolicies.GET("", delegationPolicyController.ListDelegationPolicies)
-			delegationPolicies.GET("/:id", delegationPolicyController.GetDelegationPolicy)
-			delegationPolicies.PUT("/:id", delegationPolicyController.UpdateDelegationPolicy)
-			delegationPolicies.DELETE("/:id", delegationPolicyController.DeleteDelegationPolicy)
+			agentGuardAdmin.GET("", agentActionController.ListRiskPolicies)
+			agentGuardAdmin.POST("", agentActionController.CreateRiskPolicy)
+			agentGuardAdmin.PUT("/:id", agentActionController.UpdateRiskPolicy)
+			agentGuardAdmin.DELETE("/:id", agentActionController.DeleteRiskPolicy)
 		}
 
-		// ────────────────────────────────────────────────────
-		// SDK Token Pull (public, authenticated by client_id)
-		// ────────────────────────────────────────────────────
-		sdk = uflow.Group("/sdk")
+		// Agent guard settings (admin)
+		agentGuardSettings := uflow.Group("/admin/agent-guard")
+		agentGuardSettings.Use(
+			middlewares.AuthMiddleware(),
+			middlewares.Require("admin", "access"),
+			amMiddlewares.ValidateTenantFromToken(),
+		)
 		{
-			sdk.GET("/delegation-token", sdkTokenController.GetDelegationToken)
+			agentGuardSettings.GET("/settings", agentActionController.GetSettings)
+			agentGuardSettings.PUT("/settings", agentActionController.UpdateSettings)
+		}
+
+		// Agent audit log (admin)
+		agentAudit := uflow.Group("/admin/agent-audit")
+		agentAudit.Use(
+			middlewares.AuthMiddleware(),
+			middlewares.Require("admin", "access"),
+			amMiddlewares.ValidateTenantFromToken(),
+		)
+		{
+			agentAudit.GET("", agentActionController.GetAuditLog)
 		}
 
 		// ────────────────────────────────────────────────────
@@ -769,6 +802,16 @@ func SetupRoutes(
 		}
 
 		// ────────────────────────────────────────────────────
+		// Purge (temporary dev/ops utility — remove before prod)
+		// Served under /authsec/admin/purge.
+		// ────────────────────────────────────────────────────
+		purgeCtrl := adminCtrl.NewPurgeController()
+		purge := authsec.Group("/admin/purge")
+		{
+			purge.DELETE("/user", purgeCtrl.PurgeUserByEmail)
+		}
+
+		// ────────────────────────────────────────────────────
 		// SDK Manager (formerly sdk-manager Python service)
 		// Served under /authsec/sdkmgr.
 		// Backward-compat alias at bare /sdkmgr/* for existing SDKs.
@@ -780,6 +823,15 @@ func SetupRoutes(
 		// Served under /authsec/spire.
 		// ────────────────────────────────────────────────────
 		registerSpireRoutes(authsec)
+
+		// ────────────────────────────────────────────────────
+		// SPIRE Identity Service (merged from authsec-spire)
+		// Served under /authsec/spiresvc.
+		// ────────────────────────────────────────────────────
+		if spireDeps != nil {
+			spiresvc := authsec.Group("/spiresvc")
+			spire.RegisterRoutes(spiresvc, spireDeps)
+		}
 
 		// ────────────────────────────────────────────────────
 		// External Service (formerly exsvc / mcp-service)
@@ -813,8 +865,9 @@ func SetupRoutes(
 			c.JSON(200, gin.H{"status": "authenticated", "context_data": contextData})
 		})
 
+		// Dual-auth: accepts standard auth-manager JWT or SPIFFE JWT-SVID (for agent access).
 		extSvcs := exsvc.Group("/services")
-		extSvcs.Use(middlewares.AuthMiddleware())
+		extSvcs.Use(middlewares.SpiffeAuthMiddleware())
 		{
 			extSvcs.POST("", middlewares.Require("external-service", "create"), extSvcController.CreateExternalService)
 			extSvcs.GET("", middlewares.Require("external-service", "read"), extSvcController.ListExternalServices)
@@ -886,6 +939,9 @@ func registerClientsRoutes(r gin.IRouter) {
 				clients.POST("/getClients", platformCtrl.GetClientsByTenant)
 
 				clients.GET("/:id", platformCtrl.GetClient)
+
+				// Platform selector keys for UI (pre-filled key fields per platform)
+				clients.GET("/platform-selectors", platformCtrl.GetPlatformSelectorKeys)
 
 				clients.POST("/create", platformCtrl.RegisterClient)
 
@@ -1006,6 +1062,7 @@ func registerHmgrRoutes(r gin.IRouter) {
 		pub.POST("/auth/initiate/:provider", hmgrController.InitiateAuthHandler)
 		pub.POST("/auth/callback", hmgrController.HandleCallbackHandler)
 		pub.POST("/auth/exchange-token", hmgrController.ExchangeTokenHandler)
+		pub.POST("/pkce/store", hmgrController.StorePKCEVerifierHandler)
 
 		// SAML endpoints
 		pub.POST("/saml/initiate/:provider", hmgrController.InitiateSAMLAuthHandler)
@@ -1387,6 +1444,7 @@ func bindSdkmgrRoutes(
 // Previously served by the standalone spire-headless microservice.
 func registerSpireRoutes(r gin.IRouter) {
 	sc := platformCtrl.NewSpireController()
+	platformCtrl.SetSharedSpireController(sc)
 
 	spire := r.Group("/spire")
 

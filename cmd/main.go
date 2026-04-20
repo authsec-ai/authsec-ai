@@ -24,6 +24,7 @@ import (
 	authManagerConfig "github.com/authsec-ai/auth-manager/pkg/config"
 	"github.com/authsec-ai/authsec/config"
 	platformCtrl "github.com/authsec-ai/authsec/controllers/platform"
+	"github.com/authsec-ai/authsec/internal/spire"
 	"github.com/authsec-ai/authsec/handlers"
 	"github.com/authsec-ai/authsec/internal/clients/icp"
 	"github.com/authsec-ai/authsec/internal/migration"
@@ -84,7 +85,7 @@ func main() {
 		// Build the golden tenant template in the background so it is ready for fast cloning.
 		migration.InitTemplateCreds(cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBSSLMode)
 		go func() {
-			if err := migration.SetupTenantTemplate(migration.MigrationsDir("tenant")); err != nil {
+			if err := migration.SetupTenantTemplate(migration.MigrationsDir("tenant"), config.Database.DB); err != nil {
 				log.Printf("Warning: tenant template setup failed (standard migration path remains available): %v", err)
 			}
 		}()
@@ -192,13 +193,33 @@ func main() {
 	r.Use(middlewares.RecoveryMiddleware())
 	r.Use(middlewares.TimeoutMiddleware(120 * time.Second))
 	r.Use(middlewares.MennovRateLimitMiddleware())
-	r.Use(gzip.Gzip(gzip.DefaultCompression))
+	// exclude /authsec/metrics from compression so Prometheus can scrape it
+	r.Use(gzip.Gzip(gzip.DefaultCompression, gzip.WithExcludedPaths([]string{"/authsec/metrics"})))
 
 	// Prometheus metrics endpoint
-	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
+	r.GET("/authsec/metrics", gin.WrapH(promhttp.Handler()))
 
-	// All routes (user-flow + webauthn)
-	routes.SetupRoutes(r, webAuthnHandler, adminWebAuthnHandler, endUserWebAuthnHandler)
+	// ── Bootstrap SPIRE identity service (merged from authsec-spire) ──
+	var spireDeps *spire.Dependencies
+	if config.Database != nil && config.Database.DB != nil {
+		spireCfg := &spire.BootstrapConfig{
+			MasterDB: config.Database.DB,
+		}
+		if config.VaultClient != nil {
+			spireCfg.VaultClient = config.VaultClient
+		}
+		deps, bootstrapErr := spire.Bootstrap(spireCfg)
+		if bootstrapErr != nil {
+			log.Printf("Warning: SPIRE identity service bootstrap failed (continuing without it): %v", bootstrapErr)
+		} else {
+			spireDeps = deps
+		}
+	} else {
+		log.Printf("Warning: Master database not available for SPIRE bootstrap")
+	}
+
+	// All routes (user-flow + webauthn + spire identity)
+	routes.SetupRoutes(r, webAuthnHandler, adminWebAuthnHandler, endUserWebAuthnHandler, spireDeps)
 
 	// ─────────────────────────────────────────────────────────
 	// Phase 4: background workers
@@ -224,16 +245,27 @@ func main() {
 		}
 	}()
 
-	// PKI retry worker
-	icpToken, err := services.GenerateOIDCServiceToken()
-	if err != nil {
-		log.Printf("Warning: failed to generate ICP service token for PKI retry worker: %v", err)
-	} else {
-		icpClient := icp.NewClient(cfg.ICPServiceURL, icpToken)
-		icpService := services.NewICPProvisioningService(icpClient)
-		pkiWorker := services.NewPKIRetryWorker(config.GetDatabase(), icpService, 5*time.Minute)
-		pkiWorker.Start()
-		log.Printf("PKI retry worker started")
+	// PKI retry worker — uses in-process PKI service when available, falls back to HTTP
+	{
+		var icpService *services.ICPProvisioningService
+		if spireDeps != nil && spireDeps.PKIProvisioningSvc != nil {
+			icpService = services.NewICPProvisioningServiceInProcess(spireDeps.PKIProvisioningSvc)
+			log.Printf("PKI retry worker using in-process PKI service")
+		} else {
+			icpToken, tokenErr := services.GenerateOIDCServiceToken()
+			if tokenErr != nil {
+				log.Printf("Warning: failed to generate ICP service token for PKI retry worker: %v", tokenErr)
+			} else {
+				icpClient := icp.NewClient(cfg.ICPServiceURL, icpToken)
+				icpService = services.NewICPProvisioningService(icpClient)
+				log.Printf("PKI retry worker using HTTP ICP client (fallback)")
+			}
+		}
+		if icpService != nil {
+			pkiWorker := services.NewPKIRetryWorker(config.GetDatabase(), icpService, 5*time.Minute)
+			pkiWorker.Start()
+			log.Printf("PKI retry worker started")
+		}
 	}
 
 	// ─────────────────────────────────────────────────────────

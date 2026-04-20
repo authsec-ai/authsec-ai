@@ -11,17 +11,14 @@ ENV GOPRIVATE=github.com/authsec-ai/*
 ENV GONOSUMDB=github.com/authsec-ai/*
 ENV GONOPROXY=github.com/authsec-ai/*
 
-# ✅ Configure git auth via BuildKit secret (not ARG — no token in image layers)
-RUN --mount=type=secret,id=github_token \
-    git config --global url."https://x-access-token:$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"
-
 # ✅ Copy ONLY dependency files first — this layer caches until go.mod/go.sum changes
 COPY go.mod go.sum ./
 
-# ✅ Download deps with module cache mount — persists across builds on same host
+# ✅ Configure git auth and download deps in one step — prevents stale token in cached layer
 RUN --mount=type=secret,id=github_token \
     --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
+    git config --global url."https://x-access-token:$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/" && \
     go mod download && go mod verify
 
 # ✅ Now copy the rest of the source (changes here won't re-trigger downloads)

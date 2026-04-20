@@ -178,12 +178,37 @@ func CreateDatabase(host, port, user, password, databaseName string) (bool, erro
 		return false, nil
 	}
 
-	if _, err := adminDB.Exec(fmt.Sprintf("CREATE DATABASE %s WITH ENCODING 'UTF8'", databaseName)); err != nil {
+	if _, err := adminDB.Exec(fmt.Sprintf("CREATE DATABASE %s WITH ENCODING 'UTF8' LC_COLLATE='en_US.UTF-8' LC_CTYPE='en_US.UTF-8'", databaseName)); err != nil {
 		return false, fmt.Errorf("failed to create database %s: %w", databaseName, err)
 	}
 
 	log.Printf("[Migration] Created database: %s", databaseName)
 	return true, nil
+}
+
+// DatabaseExists checks if a PostgreSQL database exists.
+func DatabaseExists(host, port, user, password, databaseName string) (bool, error) {
+	adminDSN := fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=postgres sslmode=disable",
+		host, port, user, password,
+	)
+	adminDB, err := sql.Open("postgres", adminDSN)
+	if err != nil {
+		return false, fmt.Errorf("failed to open admin connection: %w", err)
+	}
+	defer adminDB.Close()
+	adminDB.SetConnMaxLifetime(30 * time.Second)
+	adminDB.SetMaxOpenConns(1)
+
+	if err := adminDB.Ping(); err != nil {
+		return false, fmt.Errorf("failed to ping admin database: %w", err)
+	}
+
+	var exists bool
+	if err := adminDB.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", databaseName).Scan(&exists); err != nil {
+		return false, fmt.Errorf("failed to check if database exists: %w", err)
+	}
+	return exists, nil
 }
 
 // IsValidDatabaseName validates that a name is safe for use in a CREATE DATABASE statement.

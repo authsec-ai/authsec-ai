@@ -18,6 +18,7 @@ type VoiceAuthController struct {
 	voiceService  *services.VoiceAuthService
 	deviceService *services.DeviceAuthService
 	deviceRepo    *database.DeviceAuthRepository
+	tenantRepo    *database.AdminTenantRepository
 }
 
 // NewVoiceAuthController creates a new voice authentication controller
@@ -45,6 +46,7 @@ func NewVoiceAuthController() (*VoiceAuthController, error) {
 		voiceService:  services.NewVoiceAuthService(db, tenantDBService, deviceService),
 		deviceService: deviceService,
 		deviceRepo:    deviceRepo,
+		tenantRepo:    database.NewAdminTenantRepository(db),
 	}, nil
 }
 
@@ -449,8 +451,32 @@ func (ctrl *VoiceAuthController) ApproveDeviceCode(c *gin.Context) {
 		email = emailID.(string)
 	}
 
+	// Resolve tenant context from JWT claims (set by AuthMiddleware)
+	tenantID := uuid.Nil
+	tenantDomain := ""
+	if v, ok := c.Get("tenant_id"); ok && v != nil {
+		if tidStr, ok := v.(string); ok && tidStr != "" {
+			if parsed, parseErr := uuid.Parse(tidStr); parseErr == nil {
+				tenantID = parsed
+			}
+		}
+	}
+	if tenantID != uuid.Nil {
+		if t, tErr := ctrl.tenantRepo.GetTenantByID(tenantID.String()); tErr == nil {
+			tenantDomain = t.TenantDomain
+		}
+	}
+	var clientID *uuid.UUID
+	if v, ok := c.Get("client_id"); ok && v != nil {
+		if cidStr, ok := v.(string); ok && cidStr != "" {
+			if parsed, parseErr := uuid.Parse(cidStr); parseErr == nil {
+				clientID = &parsed
+			}
+		}
+	}
+
 	// Use existing device service to verify (approve/deny)
-	err = ctrl.deviceService.VerifyDeviceCode(req.UserCode, userID, email, req.Approve)
+	err = ctrl.deviceService.VerifyDeviceCode(req.UserCode, userID, email, tenantID, tenantDomain, clientID, req.Approve)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,

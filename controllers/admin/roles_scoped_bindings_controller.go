@@ -40,6 +40,16 @@ type CreateRoleResponse struct {
 	PermissionsCount int    `json:"permissions_count"`
 }
 
+// RoleDetail is the full role response including all permissions.
+type RoleDetail struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Permissions []string `json:"permissions"`
+	UserIDs     []string `json:"user_ids,omitempty"`
+	Usernames   []string `json:"usernames,omitempty"`
+}
+
 // RoleListItem enriches a listed role with counts and user details.
 type RoleListItem struct {
 	ID               string   `json:"id"`
@@ -140,13 +150,13 @@ func (rc *RolesScopedBindingsController) ListRolesAdmin(c *gin.Context) {
 }
 
 // GetRoleAdmin godoc
-// @Summary Get Role by ID (Admin)
-// @Description Returns a single role with its permissions and assigned users. Uses the primary admin database.
+// @Summary Get Role (Admin)
+// @Description Uses the primary admin database. Returns full role details including all permissions.
 // @Tags RBAC: Roles & Bindings
 // @Produce json
 // @Security BearerAuth
 // @Param role_id path string true "Role ID (UUID)"
-// @Success 200 {object} RoleListItem
+// @Success 200 {object} RoleDetail
 // @Failure 400 {object} map[string]string
 // @Failure 401 {object} map[string]string
 // @Failure 404 {object} map[string]string
@@ -158,14 +168,75 @@ func (rc *RolesScopedBindingsController) GetRoleAdmin(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
+	rc.getRole(c, config.DB, *tenantID)
+}
+
+func (rc *RolesScopedBindingsController) getRole(c *gin.Context, db *gorm.DB, tenantID uuid.UUID) {
 	roleIDStr := c.Param("role_id")
-	if _, err := uuid.Parse(roleIDStr); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid role ID"})
+	roleID, err := uuid.Parse(roleIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Role ID format"})
 		return
 	}
-	// Inject role_id as query param so listRoles filters to this single role
-	c.Request.URL.RawQuery = "role_id=" + roleIDStr
-	rc.listRoles(c, config.DB, *tenantID)
+
+	// Frontend may pass the tenant ID as the path param expecting a list of roles for that tenant.
+	if roleID == tenantID {
+		rc.listRoles(c, db, tenantID)
+		return
+	}
+
+	freshDB := db.Session(&gorm.Session{NewDB: true})
+
+	var role models.RBACRole
+	if err := freshDB.Where("id = ? AND tenant_id = ?", roleID, tenantID).First(&role).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Role not found"})
+		return
+	}
+
+	type permRow struct {
+		Resource string
+		Action   string
+	}
+	var permRows []permRow
+	freshDB.Table("role_permissions rp").
+		Select("p.resource, p.action").
+		Joins("JOIN permissions p ON rp.permission_id = p.id").
+		Where("rp.role_id = ? AND p.tenant_id = ?", roleID, tenantID).
+		Find(&permRows)
+
+	permissions := make([]string, 0, len(permRows))
+	for _, p := range permRows {
+		permissions = append(permissions, p.Resource+":"+p.Action)
+	}
+
+	type userRow struct {
+		UserID   uuid.UUID
+		Username string
+	}
+	var userRows []userRow
+	freshDB.Table("role_bindings rb").
+		Select("DISTINCT rb.user_id, COALESCE(u.username, '') AS username").
+		Joins("LEFT JOIN users u ON rb.user_id = u.id").
+		Where("rb.role_id = ? AND rb.tenant_id = ? AND rb.user_id IS NOT NULL", roleID, tenantID).
+		Scan(&userRows)
+
+	userIDs := make([]string, 0, len(userRows))
+	usernames := make([]string, 0, len(userRows))
+	for _, u := range userRows {
+		userIDs = append(userIDs, u.UserID.String())
+		if u.Username != "" {
+			usernames = append(usernames, u.Username)
+		}
+	}
+
+	c.JSON(http.StatusOK, RoleDetail{
+		ID:          role.ID.String(),
+		Name:        role.Name,
+		Description: role.Description,
+		Permissions: permissions,
+		UserIDs:     userIDs,
+		Usernames:   usernames,
+	})
 }
 
 // UpdateRoleCompositeAdmin godoc

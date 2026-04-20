@@ -1,6 +1,7 @@
 package sdkmgr
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/authsec-ai/authsec/config"
 	"github.com/sirupsen/logrus"
+	"github.com/spiffe/go-spiffe/v2/workloadapi"
 )
 
 // SPIREProxyService proxies SVID requests between customer SDKs and the local SPIRE agent.
@@ -84,27 +86,54 @@ func (s *SPIREProxyService) FetchSVIDForWorkload(
 	return svid, nil
 }
 
-// fetchX509SVID connects to the SPIRE agent socket and fetches an X.509 SVID.
-// This implementation uses a basic Unix socket probe. For production use, integrate
-// github.com/spiffe/go-spiffe/v2/workloadapi for full gRPC Workload API support.
+// fetchX509SVID connects to the SPIRE agent via the Workload API and fetches an X.509 SVID.
 func (s *SPIREProxyService) fetchX509SVID(socketPath string) (map[string]interface{}, error) {
-	// Verify the agent socket is reachable.
-	conn, err := net.DialTimeout("unix", socketPath, 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Build the Workload API address from socket path.
+	addr := "unix://" + socketPath
+
+	client, err := workloadapi.New(ctx, workloadapi.WithAddr(addr))
 	if err != nil {
 		return nil, fmt.Errorf("cannot connect to SPIRE agent at %s: %w", socketPath, err)
 	}
-	conn.Close()
+	defer client.Close()
 
-	// TODO: Replace with go-spiffe/v2 workloadapi.FetchX509Context for real SVID data.
-	// For now return a placeholder indicating the agent is reachable.
+	x509Ctx, err := client.FetchX509Context(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch X.509 SVID from SPIRE agent: %w", err)
+	}
+
+	if len(x509Ctx.SVIDs) == 0 {
+		return nil, fmt.Errorf("no X.509 SVIDs returned by SPIRE agent")
+	}
+
+	svid := x509Ctx.SVIDs[0]
+
+	// Marshal certificate and private key to PEM.
+	certPEM, keyPEM, err := svid.Marshal()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal SVID: %w", err)
+	}
+
+	// Marshal trust bundle to PEM.
+	bundle := x509Ctx.Bundles.Bundles()
+	var bundlePEM []byte
+	for _, b := range bundle {
+		bBytes, mErr := b.Marshal()
+		if mErr == nil {
+			bundlePEM = append(bundlePEM, bBytes...)
+		}
+	}
+
 	return map[string]interface{}{
 		"status":       "success",
-		"spiffe_id":    fmt.Sprintf("spiffe://authsec.dev/workload/%d", time.Now().UnixNano()),
-		"certificate":  "PENDING_IMPLEMENTATION",
-		"private_key":  "PENDING_IMPLEMENTATION",
-		"trust_bundle": "PENDING_IMPLEMENTATION",
+		"spiffe_id":    svid.ID.String(),
+		"certificate":  string(certPEM),
+		"private_key":  string(keyPEM),
+		"trust_bundle": string(bundlePEM),
 		"fetched_at":   time.Now().UTC().Format(time.RFC3339),
-		"note":         "Integrate go-spiffe/v2 for full SVID support",
 	}, nil
 }
 

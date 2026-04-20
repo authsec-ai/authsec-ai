@@ -270,6 +270,9 @@ func (ac *OocmgrController) CompleteOIDCConfiguration(c *gin.Context) {
 	var failedProviders []map[string]interface{}
 
 	for _, provider := range req.OIDCProviders {
+		// Auto-resolve Microsoft authority URLs if authority_type is specified
+		oocmgrResolveMicrosoftAuthorityURLs(&provider)
+
 		oidcClientID := fmt.Sprintf("%s-%s-oidc", req.TenantID, oocmgrNormalizeProviderName(provider.ProviderName))
 		oidcClient := oocmgrHydraClient{
 			ClientID: oidcClientID, ClientSecret: "not-used-for-oidc-config",
@@ -740,10 +743,43 @@ func (ac *OocmgrController) GetProviderTemplates(c *gin.Context) {
 		},
 		"microsoft": {
 			"provider_name": "microsoft", "display_name": "Microsoft",
-			"auth_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-			"token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+			"auth_url":      "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+			"token_url":     "https://login.microsoftonline.com/common/oauth2/v2.0/token",
 			"user_info_url": "https://graph.microsoft.com/v1.0/me",
-			"scopes": []string{"openid", "profile", "email"}, "description": "Microsoft Azure AD OAuth 2.0 integration",
+			"issuer_url":    "https://login.microsoftonline.com/common/v2.0",
+			"jwks_url":      "https://login.microsoftonline.com/common/discovery/v2.0/keys",
+			"scopes":        []string{"openid", "profile", "email"},
+			"description":   "Microsoft Azure AD OAuth 2.0 integration (multi-tenant + personal accounts)",
+			"authority_types": map[string]map[string]string{
+				"common": {
+					"label": "Accounts in any organizational directory and personal Microsoft accounts",
+					"auth_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+					"token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+					"issuer_url": "https://login.microsoftonline.com/common/v2.0",
+					"jwks_url": "https://login.microsoftonline.com/common/discovery/v2.0/keys",
+				},
+				"organizations": {
+					"label": "Accounts in any organizational directory",
+					"auth_url": "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize",
+					"token_url": "https://login.microsoftonline.com/organizations/oauth2/v2.0/token",
+					"issuer_url": "https://login.microsoftonline.com/organizations/v2.0",
+					"jwks_url": "https://login.microsoftonline.com/organizations/discovery/v2.0/keys",
+				},
+				"consumers": {
+					"label": "Personal Microsoft accounts only",
+					"auth_url": "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize",
+					"token_url": "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
+					"issuer_url": "https://login.microsoftonline.com/consumers/v2.0",
+					"jwks_url": "https://login.microsoftonline.com/consumers/discovery/v2.0/keys",
+				},
+				"tenant_specific": {
+					"label": "Accounts in this organizational directory only (single tenant)",
+					"auth_url": "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize",
+					"token_url": "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
+					"issuer_url": "https://login.microsoftonline.com/{tenant_id}/v2.0",
+					"jwks_url": "https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys",
+				},
+			},
 		},
 		"okta": {
 			"provider_name": "okta", "display_name": "Okta",
@@ -1446,6 +1482,9 @@ func (ac *OocmgrController) AddOIDCProviderToTenant(c *gin.Context) {
 	}
 
 	tenantName, _ := tenantClient.Metadata["tenant_name"].(string)
+
+	// Auto-resolve Microsoft authority URLs if authority_type is specified
+	oocmgrResolveMicrosoftAuthorityURLs(&req.Provider)
 
 	oidcClient := oocmgrHydraClient{
 		ClientID: oidcClientID,
@@ -2771,6 +2810,39 @@ func oocmgrJSONToMap(jsonData datatypes.JSON) map[string]interface{} {
 
 func oocmgrNormalizeProviderName(name string) string {
 	return strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(name, " ", "-"), "_", "-"))
+}
+
+// oocmgrResolveMicrosoftAuthorityURLs auto-populates Microsoft auth/token/issuer/jwks URLs
+// based on the "authority_type" field in additional_params.
+// Supported values: "common" (default), "organizations", "consumers", or a specific tenant ID.
+func oocmgrResolveMicrosoftAuthorityURLs(provider *oocmgrOIDCProviderConfig) {
+	if !strings.EqualFold(provider.ProviderName, "microsoft") {
+		return
+	}
+	authorityType := "common"
+	if provider.AdditionalParams != nil {
+		if at, ok := provider.AdditionalParams["authority_type"]; ok {
+			if atStr, ok := at.(string); ok && atStr != "" {
+				authorityType = atStr
+			}
+		}
+	}
+	base := fmt.Sprintf("https://login.microsoftonline.com/%s", authorityType)
+	if provider.AuthURL == "" {
+		provider.AuthURL = base + "/oauth2/v2.0/authorize"
+	}
+	if provider.TokenURL == "" {
+		provider.TokenURL = base + "/oauth2/v2.0/token"
+	}
+	if provider.IssuerURL == "" {
+		provider.IssuerURL = base + "/v2.0"
+	}
+	if provider.JWKsURL == "" {
+		provider.JWKsURL = base + "/discovery/v2.0/keys"
+	}
+	if provider.UserInfoURL == "" {
+		provider.UserInfoURL = "https://graph.microsoft.com/v1.0/me"
+	}
 }
 
 func oocmgrGenerateSecureSecret() string {

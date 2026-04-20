@@ -10,23 +10,38 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/authsec-ai/authsec/config"
 	"github.com/authsec-ai/authsec/internal/clients/icp"
+	spireservices "github.com/authsec-ai/authsec/internal/spire/services"
 	_ "github.com/lib/pq"
 )
 
-// ICPProvisioningService handles ICP-specific provisioning tasks
+// ICPProvisioningService handles PKI provisioning tasks.
+// Uses the in-process PKIProvisioningService (merged from authsec-spire) when available,
+// falls back to HTTP ICP client for backward compatibility.
 type ICPProvisioningService struct {
-	icpClient *icp.Client
+	icpClient  *icp.Client
+	pkiService *spireservices.PKIProvisioningService
 }
 
-// NewICPProvisioningService creates a new ICP provisioning service
+// NewICPProvisioningService creates a new ICP provisioning service using HTTP client.
 func NewICPProvisioningService(icpClient *icp.Client) *ICPProvisioningService {
 	return &ICPProvisioningService{
 		icpClient: icpClient,
 	}
+}
+
+// NewICPProvisioningServiceInProcess creates a provisioning service using the merged in-process PKI service.
+func NewICPProvisioningServiceInProcess(pkiService *spireservices.PKIProvisioningService) *ICPProvisioningService {
+	return &ICPProvisioningService{
+		pkiService: pkiService,
+	}
+}
+
+// SetPKIService injects the in-process PKI service (replaces HTTP calls).
+func (s *ICPProvisioningService) SetPKIService(pkiService *spireservices.PKIProvisioningService) {
+	s.pkiService = pkiService
 }
 
 // ApplyICPTenantMigrations applies ICP tenant schema to a tenant database with proper migration tracking
@@ -179,29 +194,44 @@ func (s *ICPProvisioningService) resolveICPMigrationsPath() (string, error) {
 	return "", fmt.Errorf("ICP tenant migrations not found (checked: %v)", candidates)
 }
 
-// ProvisionPKI calls ICP service to provision PKI for a tenant
+// ProvisionPKI provisions PKI for a tenant. Uses in-process service if available,
+// otherwise falls back to HTTP ICP client.
 func (s *ICPProvisioningService) ProvisionPKI(ctx context.Context, req *icp.ProvisionPKIRequest) (*icp.ProvisionPKIResponse, error) {
-	log.Printf("Checking ICP service health before provisioning for tenant: %s", req.TenantID)
-
-	// Create a fresh context with its own timeout
-	icpCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	// Step 1: Check ICP health first
-	if err := s.icpClient.HealthCheck(icpCtx); err != nil {
-		return nil, fmt.Errorf("ICP health check failed: %w", err)
+	// Prefer in-process merged service (no HTTP round-trip)
+	if s.pkiService != nil {
+		log.Printf("Provisioning PKI in-process for tenant: %s", req.TenantID)
+		spireResp, err := s.pkiService.ProvisionPKI(ctx, &spireservices.ProvisionPKIRequest{
+			TenantID:       req.TenantID,
+			CommonName:     req.CommonName,
+			AllowedDomains: req.Domain,
+			TTL:            req.TTL,
+			MaxTTL:         req.MaxTTL,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("in-process PKI provisioning failed: %w", err)
+		}
+		log.Printf("In-process PKI provisioning successful - PKI Mount: %s", spireResp.PKIMount)
+		return &icp.ProvisionPKIResponse{
+			TenantID:    spireResp.TenantID,
+			PKIMount:    spireResp.PKIMount,
+			CACert:      spireResp.CACert,
+			RoleCreated: spireResp.RoleCreated,
+			Message:     spireResp.Message,
+		}, nil
 	}
 
-	log.Printf("ICP service is healthy, proceeding with PKI provisioning for tenant: %s", req.TenantID)
+	// Fallback: HTTP call to standalone ICP service
+	if s.icpClient == nil {
+		return nil, fmt.Errorf("no PKI service available (neither in-process nor HTTP client configured)")
+	}
 
-	// Step 2: Provision PKI
-	resp, err := s.icpClient.ProvisionPKI(icpCtx, req)
-	fmt.Println(resp)
+	log.Printf("Provisioning PKI via HTTP for tenant: %s", req.TenantID)
+	resp, err := s.icpClient.ProvisionPKI(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("ICP provisioning failed: %w", err)
 	}
 
-	log.Printf("ICP provisioning successful - PKI Mount: %s", resp.PKIMount)
+	log.Printf("HTTP PKI provisioning successful - PKI Mount: %s", resp.PKIMount)
 	return resp, nil
 }
 
@@ -220,21 +250,34 @@ func (s *ICPProvisioningService) RetryPKIProvisioning(ctx context.Context, tenan
 	return s.ProvisionPKI(ctx, req)
 }
 
-// UpdateTenantStatusInICP updates tenant status in ICP service
+// UpdateTenantStatusInICP updates tenant status in ICP service.
+// No-op when using in-process service (tenant status is managed directly).
 func (s *ICPProvisioningService) UpdateTenantStatusInICP(ctx context.Context, tenantID, status string) error {
-	log.Printf("Updating tenant status in ICP: %s -> %s", tenantID, status)
-
-	if err := s.icpClient.UpdateTenantStatus(ctx, tenantID, status); err != nil {
-		log.Printf("Warning: Failed to update tenant status in ICP: %v", err)
-		// Don't fail the operation - can be retried later
+	if s.pkiService != nil {
+		// In-process mode: tenant status is updated directly by PKIProvisioningService
+		return nil
+	}
+	if s.icpClient == nil {
 		return nil
 	}
 
+	log.Printf("Updating tenant status in ICP: %s -> %s", tenantID, status)
+	if err := s.icpClient.UpdateTenantStatus(ctx, tenantID, status); err != nil {
+		log.Printf("Warning: Failed to update tenant status in ICP: %v", err)
+		return nil
+	}
 	return nil
 }
 
-// HealthCheck checks if ICP service is reachable
+// HealthCheck checks if PKI service is available.
 func (s *ICPProvisioningService) HealthCheck(ctx context.Context) error {
+	if s.pkiService != nil {
+		// In-process: always healthy
+		return nil
+	}
+	if s.icpClient == nil {
+		return fmt.Errorf("no PKI service available")
+	}
 	return s.icpClient.HealthCheck(ctx)
 }
 

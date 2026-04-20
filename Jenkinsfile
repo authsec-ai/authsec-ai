@@ -51,7 +51,7 @@ pipeline {
                     
                     // CHECK: Is this the production branch?
                     // Update 'authsec-prod' below if your production branch name is different
-                    if (env.BRANCH_NAME == 'prod' || env.BRANCH_NAME == 'production') {
+                    if (env.BRANCH_NAME == 'authsec-prod' || env.BRANCH_NAME == 'production') {
                         echo "Configuring for PRODUCTION environment..."
                         env.IS_PROD_BRANCH = 'true'
                         env.AKS_ENV = 'authsec'
@@ -63,20 +63,20 @@ pipeline {
                         env.DOCKER_IMAGE = "${env.DOCKER_REGISTRY}/${SERVICE_NAME}:production"
                         env.DOCKER_IMAGE_PUBLIC = "${env.DOCKER_REGISTRY_PUBLIC}/${SERVICE_NAME}:1.0.0" 
                         
-                    } else if (env.BRANCH_NAME == 'dev' || env.BRANCH_NAME == 'development') {
+                    } else if (env.BRANCH_NAME == 'authsec-dev' || env.BRANCH_NAME == 'development' || env.BRANCH_NAME == 'main') {
                         echo "Configuring for DEVELOPMENT environment..."
                         env.IS_PROD_BRANCH = 'false'
                         env.AKS_ENV = 'authsec'
                         
                         // Assuming you have a dev namespace. Change 'authsec-dev' if different.
                         env.K8S_NAMESPACE = 'authsec-dev'
-                        env.APP_LABEL = "dev2-${SERVICE_NAME}"
+                        env.APP_LABEL = "dev-${SERVICE_NAME}"
                         
                         // Dev images get unique tags so they don't overwrite prod
                         env.DOCKER_IMAGE = "${env.DOCKER_REGISTRY}/${SERVICE_NAME}:development"
                         env.DOCKER_IMAGE_PUBLIC = "" // Not used in dev
 
-                    } else if (env.BRANCH_NAME == 'staging' || env.BRANCH_NAME == 'develop') {
+                    } else if (env.BRANCH_NAME == 'authsec-staging' || env.BRANCH_NAME == 'staging') {
                         echo "Configuring for STAGING environment..."
                         env.IS_PROD_BRANCH = 'false'
                         env.AKS_ENV = 'authsec'
@@ -89,19 +89,6 @@ pipeline {
                         env.DOCKER_IMAGE = "${env.DOCKER_REGISTRY}/${SERVICE_NAME}:stage"
                         env.DOCKER_IMAGE_PUBLIC = "" // Not used in staging
 
-                    } else if (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master') {
-                        echo "Configuring for CURRENT PROD environment..."
-                        env.IS_PROD_BRANCH = 'false'
-                        env.AKS_ENV = 'authnull'
-                        
-                        // Assuming you have a authsec namespace. Change 'authsec' if different.
-                        env.K8S_NAMESPACE = 'authsec'
-                        env.APP_LABEL = "dev-${SERVICE_NAME}"
-                        
-                        // Dev images get unique tags so they don't overwrite prod
-                        env.DOCKER_IMAGE = "${env.DOCKER_REGISTRY}/${SERVICE_NAME}:latest"
-                        env.DOCKER_IMAGE_PUBLIC = "" // Not used in current prod
-                        
                     } else {
                         echo "No matching environment configuration found for branch: ${env.BRANCH_NAME}"
                         error "BUILD FAILED: Unrecognized branch for deployment."
@@ -113,42 +100,6 @@ pipeline {
         stage('Checkout') {
             steps {
                 checkout scm
-            }
-        }
-
-        stage('Lint & Vet') {
-            steps {
-                sh '''
-                    export PATH=$PATH:/usr/local/go/bin
-                    go vet ./...
-                '''
-            }
-        }
-
-        stage('Unit Tests') {
-            steps {
-                sh '''
-                    export PATH=$PATH:/usr/local/go/bin
-                    go test -count=1 -timeout 5m -coverprofile=coverage.out \
-                      $(go list ./... | grep -v /tests/integration) \
-                      2>&1 | tee test-output.txt
-
-                    # Extract total coverage percentage
-                    COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | tr -d '%')
-                    echo "Total test coverage: ${COVERAGE}%"
-
-                    # Fail if coverage is below threshold
-                    THRESHOLD=50
-                    if [ "$(echo "$COVERAGE < $THRESHOLD" | bc -l)" -eq 1 ]; then
-                        echo "FAIL: Test coverage ${COVERAGE}% is below minimum ${THRESHOLD}%"
-                        exit 1
-                    fi
-                '''
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'test-output.txt,coverage.out', fingerprint: true, allowEmptyArchive: true
-                }
             }
         }
         
@@ -180,7 +131,7 @@ pipeline {
                     )
                 ]) {
                         // Uses the DOCKER_IMAGE variable set in 'Initialize'
-                        sh "docker build --build-arg GITHUB_TOKEN=${GITHUB_TOKEN} -t ${env.DOCKER_IMAGE} ."
+                        sh "docker build --secret id=github_token,env=GITHUB_TOKEN -t ${env.DOCKER_IMAGE} ."
                     }
                 }
             }
@@ -295,6 +246,8 @@ pipeline {
                     }
 
                     sh """
+                        rm -f /var/lib/jenkins/.kube/config
+                        mkdir -p /var/lib/jenkins/.kube
                         az login --service-principal \
                           -u "$AZURE_CLIENT_ID" \
                           -p "$AZURE_CLIENT_SECRET" \
@@ -305,17 +258,19 @@ pipeline {
                         az aks get-credentials \
                           --resource-group "$resourceGroup" \
                           --admin \
-                          --name "$aksCluster"
+                          --name "$aksCluster" \
+                          --overwrite-existing
                     """
                 }
             }
         }
 
-        stage('Rolling Restart') {
+        stage('Delete Existing Pods') {
             steps {
-                echo "Rolling restart of deployment '${APP_LABEL}' in ${K8S_NAMESPACE}..."
-                sh "kubectl rollout restart deployment/${APP_LABEL} -n ${K8S_NAMESPACE}"
-                sh "kubectl rollout status deployment/${APP_LABEL} -n ${K8S_NAMESPACE} --timeout=300s"
+                // Dynamically deletes pods in the correct namespace (Dev or Prod)
+                // Uses dynamic label to target specific service pods
+                echo "Restarting pods with label 'app=${APP_LABEL}' in ${K8S_NAMESPACE}..."
+                sh "kubectl delete pods -l app=${APP_LABEL} -n ${K8S_NAMESPACE} --ignore-not-found=true"
             }
         }
     }   

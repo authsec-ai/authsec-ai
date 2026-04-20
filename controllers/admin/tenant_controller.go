@@ -14,6 +14,7 @@ import (
 	"github.com/authsec-ai/authsec/config"
 	"github.com/authsec-ai/authsec/database"
 	"github.com/authsec-ai/authsec/internal/clients/icp"
+	spireservices "github.com/authsec-ai/authsec/internal/spire/services"
 	"github.com/authsec-ai/authsec/middlewares"
 	"github.com/authsec-ai/authsec/models"
 	"github.com/authsec-ai/authsec/services"
@@ -71,6 +72,13 @@ func NewUserController() (*UserController, error) {
 		permissionSvc:          services.NewPermissionService(db.DB), // Use the underlying sql.DB
 		icpProvisioningService: icpProvisioningService,
 	}, nil
+}
+
+// SetPKIService injects the in-process PKI provisioning service (replaces HTTP ICP client).
+func (uc *UserController) SetPKIService(pkiSvc *spireservices.PKIProvisioningService) {
+	if uc.icpProvisioningService != nil {
+		uc.icpProvisioningService.SetPKIService(pkiSvc)
+	}
 }
 
 // validateTenantDomain checks if the provided domain is valid for the given tenant.

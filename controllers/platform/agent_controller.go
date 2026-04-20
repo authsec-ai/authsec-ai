@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/authsec-ai/authsec/config"
+	spiremodels "github.com/authsec-ai/authsec/internal/spire/domain/models"
+	spireservices "github.com/authsec-ai/authsec/internal/spire/services"
 	"github.com/authsec-ai/authsec/middlewares"
 	"github.com/authsec-ai/authsec/models"
-	"github.com/authsec-ai/authsec/services"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -18,13 +19,21 @@ import (
 // AgentController handles AI agent management: listing agents, provisioning
 // SPIRE identities, and issuing delegated JWT-SVIDs.
 type AgentController struct {
-	spireService *services.SpireService
+	workloadEntrySvc *spireservices.WorkloadEntryService
+	jwtSvidSvc       *spireservices.JWTSVIDService
 }
 
 func NewAgentController() *AgentController {
-	return &AgentController{
-		spireService: services.NewSpireService(),
-	}
+	return &AgentController{}
+}
+
+// SetServices injects the SPIRE services after bootstrap.
+func (ac *AgentController) SetServices(
+	workloadEntrySvc *spireservices.WorkloadEntryService,
+	jwtSvidSvc *spireservices.JWTSVIDService,
+) {
+	ac.workloadEntrySvc = workloadEntrySvc
+	ac.jwtSvidSvc = jwtSvidSvc
 }
 
 // --- Request types ---
@@ -184,17 +193,28 @@ func (ac *AgentController) ProvisionIdentity(c *gin.Context) {
 		return
 	}
 
-	// Get auth token to pass to authsec-spire
-	authToken := extractDelegationBearerToken(c)
+	// Create workload entry directly via merged service
+	if ac.workloadEntrySvc == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Workload entry service not initialized"})
+		return
+	}
 
-	// Call authsec-spire to create the workload entry — it generates the SPIFFE ID
-	spireResp, err := ac.spireService.CreateAgentEntry(&services.CreateAgentEntryRequest{
+	trustDomain := config.AppConfig.SpiffeTrustDomain
+	if trustDomain == "" {
+		trustDomain = "example.org"
+	}
+	spiffeID := fmt.Sprintf("spiffe://%s/tenants/%s/agents/%s/%s",
+		trustDomain, tenantID.String(), *agent.AgentType, clientID)
+
+	spireEntry := &spiremodels.WorkloadEntry{
 		TenantID:  tenantID.String(),
-		ClientID:  clientID,
-		AgentType: *agent.AgentType,
+		SpiffeID:  spiffeID,
 		ParentID:  req.ParentID,
+		Selectors: map[string]string{"authsec:client_id": clientID, "authsec:agent_type": *agent.AgentType},
 		TTL:       req.TTL,
-	}, authToken)
+	}
+
+	created, err := ac.workloadEntrySvc.CreateEntry(c.Request.Context(), spireEntry)
 	if err != nil {
 		log.Printf("[AgentController] Failed to create SPIRE entry for agent %s: %v", clientID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create SPIRE identity", "details": err.Error()})
@@ -204,29 +224,28 @@ func (ac *AgentController) ProvisionIdentity(c *gin.Context) {
 	// Write the SPIFFE ID back to the client record
 	updateResult := tenantDB.Table("clients").
 		Where("client_id = ? AND tenant_id = ?", clientID, tenantID).
-		Update("spiffe_id", spireResp.SpiffeID)
+		Update("spiffe_id", created.SpiffeID)
 	if updateResult.Error != nil {
 		log.Printf("[AgentController] Failed to update client spiffe_id: %v", updateResult.Error)
-		// Entry was created in SPIRE but we couldn't update the client — log but return the SPIRE data
 	}
 
-	log.Printf("[AgentController] Agent %s provisioned: spiffe_id=%s entry_id=%s", clientID, spireResp.SpiffeID, spireResp.EntryID)
+	log.Printf("[AgentController] Agent %s provisioned: spiffe_id=%s entry_id=%s", clientID, created.SpiffeID, created.ID)
 
 	// Audit log: agent identity provisioned
 	middlewares.Audit(c, "agent_identity", clientID, "provision", &middlewares.AuditChanges{
 		After: map[string]interface{}{
-			"spiffe_id": spireResp.SpiffeID,
-			"entry_id":  spireResp.EntryID,
-			"parent_id": spireResp.ParentID,
+			"spiffe_id": created.SpiffeID,
+			"entry_id":  created.ID,
+			"parent_id": created.ParentID,
 		},
 	})
 
 	c.JSON(http.StatusCreated, gin.H{
-		"entry_id":  spireResp.EntryID,
-		"spiffe_id": spireResp.SpiffeID,
+		"entry_id":  created.ID,
+		"spiffe_id": created.SpiffeID,
 		"client_id": clientID,
 		"tenant_id": tenantID.String(),
-		"parent_id": spireResp.ParentID,
+		"parent_id": created.ParentID,
 		"message":   "SPIRE identity provisioned successfully",
 	})
 }
@@ -380,18 +399,19 @@ func (ac *AgentController) DelegateToken(c *gin.Context) {
 		"client_id":   clientID,
 	}
 
-	// Get auth token to forward to authsec-spire
-	authToken := extractDelegationBearerToken(c)
-
-	// Issue JWT-SVID via authsec-spire
+	// Issue JWT-SVID directly via merged service
 	finalTTL := int(ttl.Seconds())
-	jwtResp, err := ac.spireService.IssueDelegatedJWTSVID(&services.IssueJWTSVIDRequest{
+	if ac.jwtSvidSvc == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "JWT-SVID service not initialized"})
+		return
+	}
+	jwtResp, err := ac.jwtSvidSvc.IssueJWTSVID(c.Request.Context(), &spireservices.IssueJWTSVIDRequest{
 		TenantID:     tenantID.String(),
 		SpiffeID:     *agent.SpiffeID,
 		Audience:     req.Audience,
 		TTL:          finalTTL,
 		CustomClaims: customClaims,
-	}, authToken)
+	})
 	if err != nil {
 		log.Printf("[AgentController] Failed to issue JWT-SVID for agent %s: %v", clientID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to issue JWT-SVID", "details": err.Error()})

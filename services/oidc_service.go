@@ -48,7 +48,7 @@ func (s *OIDCService) GetActiveProviders() ([]models.OIDCProviderPublic, error) 
 		return nil, err
 	}
 
-	var publicProviders []models.OIDCProviderPublic
+	publicProviders := make([]models.OIDCProviderPublic, 0, len(providers))
 	for _, p := range providers {
 		publicProviders = append(publicProviders, models.OIDCProviderPublic{
 			ProviderName: p.ProviderName,

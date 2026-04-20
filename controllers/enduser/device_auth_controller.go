@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/authsec-ai/authsec/config"
 	"github.com/authsec-ai/authsec/database"
@@ -14,10 +15,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// DeviceAuthController handles device authorization grant endpoints
+// DeviceAuthController handles device authorization grant endpoints (RFC 8628)
 type DeviceAuthController struct {
 	deviceService *services.DeviceAuthService
+	oidcService   *services.OIDCService
 	tenantRepo    *database.AdminTenantRepository
+	userRepo      *database.UserRepository
 }
 
 // NewDeviceAuthController creates a new device authorization controller
@@ -40,20 +43,14 @@ func NewDeviceAuthController() (*DeviceAuthController, error) {
 
 	return &DeviceAuthController{
 		deviceService: services.NewDeviceAuthService(db, tenantDBService),
+		oidcService:   services.NewOIDCService(db),
 		tenantRepo:    database.NewAdminTenantRepository(db),
+		userRepo:      database.NewUserRepository(db),
 	}, nil
 }
 
-// RequestDeviceCode initiates the device authorization flow
-// @Summary Request device code
-// @Description Initiates device authorization grant flow (RFC 8628). Returns device_code for polling and user_code for user activation.
-// @Tags Device Authorization
-// @Accept json
-// @Produce json
-// @Param request body models.DeviceCodeRequest true "Device code request"
-// @Success 200 {object} models.DeviceCodeResponse "Device code created successfully"
-// @Failure 400 {object} map[string]string "Bad request"
-// @Failure 500 {object} map[string]string "Internal server error"
+// RequestDeviceCode initiates the device authorization flow.
+// No authentication required. CLI sends only scopes — no client_id or tenant_domain.
 // @Router /uflow/auth/device/code [post]
 func (ctrl *DeviceAuthController) RequestDeviceCode(c *gin.Context) {
 	var req models.DeviceCodeRequest
@@ -62,17 +59,14 @@ func (ctrl *DeviceAuthController) RequestDeviceCode(c *gin.Context) {
 		return
 	}
 
-	// Initiate device flow
 	resp, err := ctrl.deviceService.InitiateDeviceFlow(&req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create device code", "details": err.Error()})
 		return
 	}
 
-	// Audit log: Device code requested
 	middlewares.Audit(c, "device_auth", resp.DeviceCode, "request_code", &middlewares.AuditChanges{
 		After: map[string]interface{}{
-			"client_id":        req.ClientID,
 			"user_code":        resp.UserCode,
 			"verification_uri": resp.VerificationURI,
 			"expires_in":       resp.ExpiresIn,
@@ -82,15 +76,8 @@ func (ctrl *DeviceAuthController) RequestDeviceCode(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// PollDeviceToken polls for device authorization status
-// @Summary Poll for device token
-// @Description Device polls this endpoint to check if user has authorized. Returns token when authorized, or error codes per RFC 8628.
-// @Tags Device Authorization
-// @Accept json
-// @Produce json
-// @Param request body models.DeviceTokenRequest true "Device token request"
-// @Success 200 {object} models.DeviceTokenResponse "Token issued or status returned"
-// @Failure 400 {object} map[string]string "Bad request"
+// PollDeviceToken is polled by the CLI to get the access token once authorized.
+// Returns RFC 8628 error codes in the body; HTTP 400 for expired/slow_down, 403 for access_denied.
 // @Router /uflow/auth/device/token [post]
 func (ctrl *DeviceAuthController) PollDeviceToken(c *gin.Context) {
 	var req models.DeviceTokenRequest
@@ -99,20 +86,18 @@ func (ctrl *DeviceAuthController) PollDeviceToken(c *gin.Context) {
 		return
 	}
 
-	// Poll for token
-	resp, err := ctrl.deviceService.PollForToken(req.DeviceCode, req.ClientID)
+	resp, err := ctrl.deviceService.PollForToken(req.DeviceCode)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to poll device token", "details": err.Error()})
 		return
 	}
 
-	// RFC 8628 specifies that pending/slow_down/expired_token return HTTP 400
-	// access_denied returns HTTP 403, but we simplify to 200 with error field
 	if resp.Error != "" {
 		statusCode := http.StatusOK
-		if resp.Error == models.ErrorAccessDenied {
+		switch resp.Error {
+		case models.ErrorAccessDenied:
 			statusCode = http.StatusForbidden
-		} else if resp.Error == models.ErrorExpiredToken {
+		case models.ErrorExpiredToken, models.ErrorSlowDown:
 			statusCode = http.StatusBadRequest
 		}
 		c.JSON(statusCode, resp)
@@ -122,15 +107,7 @@ func (ctrl *DeviceAuthController) PollDeviceToken(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// GetActivationInfo retrieves device information for activation page
-// @Summary Get device activation info
-// @Description Returns device information to display on the activation page (user_code, tenant, scopes, etc.)
-// @Tags Device Authorization
-// @Accept json
-// @Produce json
-// @Param user_code query string true "User code from device"
-// @Success 200 {object} models.DeviceActivationInfoResponse "Device activation information"
-// @Failure 400 {object} map[string]string "Bad request - invalid or expired code"
+// GetActivationInfo returns device info for the activation page (public).
 // @Router /uflow/auth/device/activate/info [get]
 func (ctrl *DeviceAuthController) GetActivationInfo(c *gin.Context) {
 	userCode := c.Query("user_code")
@@ -148,19 +125,136 @@ func (ctrl *DeviceAuthController) GetActivationInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, info)
 }
 
-// VerifyDeviceCode verifies and authorizes/denies a device code
-// @Summary Verify device code
-// @Description User authorizes or denies the device after authenticating. Requires JWT token in Authorization header.
-// @Tags Device Authorization
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Param Authorization header string true "Bearer JWT token"
-// @Param request body models.DeviceVerificationRequest true "Device verification request"
-// @Success 200 {object} models.DeviceVerificationResponse "Device verified successfully"
-// @Failure 400 {object} map[string]string "Bad request"
-// @Failure 401 {object} map[string]string "Unauthorized - invalid or missing token"
-// @Failure 500 {object} map[string]string "Internal server error"
+// VerifyUserCode validates a user_code without authentication.
+// Called by app.authsec.ai/activate before the user logs in — confirms the code exists.
+// @Router /uflow/auth/device/verify [post]
+func (ctrl *DeviceAuthController) VerifyUserCode(c *gin.Context) {
+	var req models.DeviceVerifyCodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body", "details": err.Error()})
+		return
+	}
+
+	dc, err := ctrl.deviceService.ValidateUserCode(req.UserCode)
+	if err != nil {
+		c.JSON(http.StatusOK, models.DeviceVerifyCodeResponse{
+			Valid:  false,
+			Error:  "invalid_code",
+		})
+		return
+	}
+
+	expiresIn := int(dc.ExpiresAt - time.Now().Unix())
+	if expiresIn < 0 {
+		expiresIn = 0
+	}
+
+	c.JSON(http.StatusOK, models.DeviceVerifyCodeResponse{
+		Valid:        true,
+		DeviceCodeID: dc.ID.String(),
+		ExpiresIn:    expiresIn,
+	})
+}
+
+// AuthorizeDevice is called by the web app (app.authsec.ai/activate) after the
+// authenticated user enters their user_code and approves or denies the device.
+// Requires: valid browser session (Bearer token from enduser login).
+// @Router /uflow/auth/device/authorize [post]
+func (ctrl *DeviceAuthController) AuthorizeDevice(c *gin.Context) {
+	var req models.DeviceAuthorizeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body", "details": err.Error()})
+		return
+	}
+
+	userIDStr, err := middlewares.ResolveUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated", "details": err.Error()})
+		return
+	}
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user ID in token"})
+		return
+	}
+
+	// Email from token claims
+	email := ""
+	if v, ok := c.Get("email_id"); ok && v != nil {
+		email, _ = v.(string)
+	}
+	if email == "" {
+		if v, ok := c.Get("email"); ok && v != nil {
+			email, _ = v.(string)
+		}
+	}
+
+	// tenant_id from token claims (set by AuthMiddleware)
+	tenantIDStr := ""
+	if v, ok := c.Get("tenant_id"); ok && v != nil {
+		tenantIDStr, _ = v.(string)
+	}
+	if tenantIDStr == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Tenant context missing from session"})
+		return
+	}
+	tenantID, err := uuid.Parse(tenantIDStr)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant ID in token"})
+		return
+	}
+
+	// Resolve tenant_domain via DB lookup (not in JWT claims)
+	tenant, err := ctrl.tenantRepo.GetTenantByID(tenantIDStr)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Tenant not found"})
+		return
+	}
+	tenantDomain := tenant.TenantDomain
+
+	// client_id from token claims
+	var clientID *uuid.UUID
+	if v, ok := c.Get("client_id"); ok && v != nil {
+		if cidStr, ok := v.(string); ok && cidStr != "" {
+			if parsed, err := uuid.Parse(cidStr); err == nil {
+				clientID = &parsed
+			}
+		}
+	}
+
+	if err := ctrl.deviceService.AuthorizeDevice(
+		req.UserCode, userID, email, tenantID, tenantDomain, clientID, req.Approved,
+	); err != nil {
+		statusCode := http.StatusBadRequest
+		// 404 if code not found / expired
+		if err.Error() == "invalid user code" {
+			statusCode = http.StatusNotFound
+		}
+		c.JSON(statusCode, gin.H{"error": err.Error()})
+		return
+	}
+
+	action := "authorize"
+	status := "authorized"
+	if !req.Approved {
+		action = "deny"
+		status = "denied"
+	}
+
+	middlewares.Audit(c, "device_auth", req.UserCode, action, &middlewares.AuditChanges{
+		After: map[string]interface{}{
+			"user_code": req.UserCode,
+			"user_id":   userID.String(),
+			"tenant_id": tenantID.String(),
+			"approved":  req.Approved,
+		},
+	})
+
+	c.JSON(http.StatusOK, models.DeviceAuthorizeResponse{Status: status})
+}
+
+// VerifyDeviceCode is the legacy endpoint (kept for backwards compatibility).
+// New integrations should use POST /device/authorize.
 // @Router /uflow/auth/device/verify [post]
 func (ctrl *DeviceAuthController) VerifyDeviceCode(c *gin.Context) {
 	var req models.DeviceVerificationRequest
@@ -169,30 +263,55 @@ func (ctrl *DeviceAuthController) VerifyDeviceCode(c *gin.Context) {
 		return
 	}
 
-	// Extract user info from JWT token (set by auth middleware)
-	// Use ResolveUserID which handles both 'sub' and 'user_id' claims, and falls back to email lookup
 	userIDStr, err := middlewares.ResolveUserID(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated", "details": err.Error()})
 		return
 	}
-
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user ID in token"})
 		return
 	}
 
-	// Get user email from token (try both email_id and email)
 	email := ""
-	if emailID, exists := c.Get("email_id"); exists && emailID != nil {
-		email = emailID.(string)
-	} else if emailVal, exists := c.Get("email"); exists && emailVal != nil {
-		email = emailVal.(string)
+	if v, ok := c.Get("email_id"); ok && v != nil {
+		email, _ = v.(string)
+	}
+	if email == "" {
+		if v, ok := c.Get("email"); ok && v != nil {
+			email, _ = v.(string)
+		}
 	}
 
-	// Verify device code
-	if err := ctrl.deviceService.VerifyDeviceCode(req.UserCode, userID, email, req.Approve); err != nil {
+	tenantIDStr := ""
+	if v, ok := c.Get("tenant_id"); ok && v != nil {
+		tenantIDStr, _ = v.(string)
+	}
+	tenantID := uuid.Nil
+	if tenantIDStr != "" {
+		if parsed, parseErr := uuid.Parse(tenantIDStr); parseErr == nil {
+			tenantID = parsed
+		}
+	}
+
+	tenantDomain := ""
+	if tenantID != uuid.Nil {
+		if t, tErr := ctrl.tenantRepo.GetTenantByID(tenantIDStr); tErr == nil {
+			tenantDomain = t.TenantDomain
+		}
+	}
+
+	var clientID *uuid.UUID
+	if v, ok := c.Get("client_id"); ok && v != nil {
+		if cidStr, ok := v.(string); ok && cidStr != "" {
+			if parsed, parseErr := uuid.Parse(cidStr); parseErr == nil {
+				clientID = &parsed
+			}
+		}
+	}
+
+	if err := ctrl.deviceService.VerifyDeviceCode(req.UserCode, userID, email, tenantID, tenantDomain, clientID, req.Approve); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to verify device code", "details": err.Error()})
 		return
 	}
@@ -204,12 +323,10 @@ func (ctrl *DeviceAuthController) VerifyDeviceCode(c *gin.Context) {
 		action = "deny"
 	}
 
-	// Audit log: Device code verified
 	middlewares.Audit(c, "device_auth", req.UserCode, action, &middlewares.AuditChanges{
 		After: map[string]interface{}{
 			"user_code": req.UserCode,
 			"user_id":   userID.String(),
-			"email":     email,
 			"approved":  req.Approve,
 		},
 	})
@@ -221,26 +338,115 @@ func (ctrl *DeviceAuthController) VerifyDeviceCode(c *gin.Context) {
 }
 
 // ShowActivationPage serves the HTML page for device activation
-// @Summary Show device activation page
-// @Description Displays the HTML page where users activate their devices
-// @Tags Device Authorization
-// @Produce html
-// @Param user_code query string false "User code (optional - can be entered on page)"
-// @Success 200 {string} string "HTML page"
 // @Router /activate [get]
 func (ctrl *DeviceAuthController) ShowActivationPage(c *gin.Context) {
-	// Read HTML template from file
 	htmlContent, err := os.ReadFile("templates/device_activation.html")
 	if err != nil {
-		// Fallback to inline HTML if file not found
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(getActivationPageHTML()))
 		return
 	}
-
 	c.Data(http.StatusOK, "text/html; charset=utf-8", htmlContent)
 }
 
-// getActivationPageHTML returns inline HTML if template file is not available
+// AuthorizeDeviceWithOIDC is the public endpoint for shield end-user login.
+// After the user authenticates via OIDC (SSO), the callback page sends:
+//   {user_code, oidc_code, state}
+// This endpoint exchanges the OIDC code for user identity, then authorizes
+// the device code — so the shield's poll gets the token.
+// No JWT required — the OIDC code exchange itself proves authentication.
+// @Router /uflow/auth/device/authorize-oidc [post]
+func (ctrl *DeviceAuthController) AuthorizeDeviceWithOIDC(c *gin.Context) {
+	var req models.DeviceAuthorizeOIDCRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body", "details": err.Error()})
+		return
+	}
+
+	if req.UserCode == "" || req.OIDCCode == "" || req.State == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_code, oidc_code, and state are required"})
+		return
+	}
+
+	// Step 1: Validate the user_code is still pending
+	dc, err := ctrl.deviceService.ValidateUserCode(req.UserCode)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired device code"})
+		return
+	}
+	_ = dc
+
+	// Step 2: Exchange the OIDC code for user identity
+	callbackInput := &models.OIDCCallbackInput{
+		Code:  req.OIDCCode,
+		State: req.State,
+	}
+	state, userInfo, err := ctrl.oidcService.HandleCallback(callbackInput)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "OIDC authentication failed", "details": err.Error()})
+		return
+	}
+
+	if userInfo == nil || userInfo.Email == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Could not retrieve user identity from OIDC provider"})
+		return
+	}
+
+	// Step 3: Resolve user in the tenant
+	var tenantID uuid.UUID
+	if state.TenantID != nil {
+		tenantID = *state.TenantID
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Could not determine tenant from OIDC state"})
+		return
+	}
+
+	user, err := ctrl.userRepo.GetUserByEmailAndTenant(userInfo.Email, tenantID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found in this workspace", "details": err.Error()})
+		return
+	}
+
+	// Step 4: Get tenant info
+	tenant, err := ctrl.tenantRepo.GetTenantByID(tenantID.String())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Tenant not found"})
+		return
+	}
+
+	// Step 5: client_id — resolve from tenant mappings if available
+	var clientID *uuid.UUID
+	// clientID will be nil here; AuthorizeDevice handles this gracefully
+
+	// Step 6: Authorize the device code with the user's identity
+	if err := ctrl.deviceService.AuthorizeDevice(
+		req.UserCode,
+		user.ID,
+		user.Email,
+		tenantID,
+		tenant.TenantDomain,
+		clientID,
+		true, // approved
+	); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to authorize device", "details": err.Error()})
+		return
+	}
+
+	middlewares.Audit(c, "device_auth", req.UserCode, "authorize_oidc", &middlewares.AuditChanges{
+		After: map[string]interface{}{
+			"user_code":  req.UserCode,
+			"user_email": user.Email,
+			"tenant_id":  tenantID.String(),
+			"method":     "oidc",
+		},
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "authorized",
+		"message": "Device authorized. The CLI will receive credentials shortly.",
+	})
+}
+
+// getActivationPageHTML returns inline HTML fallback if template file is not available
 func getActivationPageHTML() string {
 	return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>Device Activation</title></head>

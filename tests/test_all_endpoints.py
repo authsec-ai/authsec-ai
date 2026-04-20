@@ -229,10 +229,10 @@ def test_health_and_discovery():
     """Phase 1: Health endpoints and discovery across all services."""
     G = "Health & Discovery"
 
-    # Root endpoints
-    test(G, "OIDC Discovery", "GET", "/.well-known/openid-configuration", expect_status=[200, 404])
-    test(G, "JWKS", "GET", "/.well-known/jwks.json", expect_status=[200, 404])
-    test(G, "Prometheus Metrics", "GET", "/metrics", expect_status=200)
+    # Root endpoints (all now under /authsec)
+    test(G, "OIDC Discovery", "GET", "/authsec/.well-known/openid-configuration", expect_status=[200, 404])
+    test(G, "JWKS", "GET", "/authsec/.well-known/jwks.json", expect_status=[200, 404])
+    test(G, "Prometheus Metrics", "GET", "/authsec/metrics", expect_status=200)
 
     # UFlow health
     test(G, "UFlow Health", "GET", "/authsec/uflow/health", expect_status=200)
@@ -746,8 +746,8 @@ def test_webauthn():
          body={"email": "test@example.com", "code": "000000"},
          expect_status=[200, 400, 401, 500])
 
-    # Root legacy
-    test(G, "Root WebAuthn MFA LoginStatus", "POST", "/webauthn/mfa/loginStatus",
+    # Previously at root, now under /authsec
+    test(G, "Root WebAuthn MFA LoginStatus", "POST", "/authsec/webauthn/mfa/loginStatus",
          body={"email": "test@example.com"}, expect_status=OK)
 
 

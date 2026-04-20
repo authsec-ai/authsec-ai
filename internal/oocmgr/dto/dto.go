@@ -371,7 +371,7 @@ type TenantHydraClient struct {
 	HydraClientID     string         `json:"hydra_client_id" gorm:"not null;unique"`
 	HydraClientSecret string         `json:"hydra_client_secret" gorm:"not null"`
 	ClientName        string         `json:"client_name" gorm:"not null"`
-	RedirectURIs      pq.StringArray `json:"redirect_uris" gorm:"type:jsonb;default:'[]'"`
+	RedirectURIs      pq.StringArray `json:"redirect_uris" gorm:"type:text[];default:'{}'"`
 	Scopes            pq.StringArray `json:"scopes" gorm:"type:text[];default:'{openid,profile,email}'"`
 	ClientType        string         `json:"client_type" gorm:"not null"`
 	ProviderName      string         `json:"provider_name,omitempty"`

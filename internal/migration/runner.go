@@ -145,22 +145,33 @@ func (mr *MigrationRunner) RunMigrations() error {
 		templatePath := filepath.Join(mr.migrationsDir, "000_tenant_template.sql")
 		if _, err := os.Stat(templatePath); err == nil {
 			var schemaExists bool
-			mr.db.QueryRow(
+			if err := mr.db.QueryRow(
 				"SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='users')",
-			).Scan(&schemaExists)
+			).Scan(&schemaExists); err != nil {
+				log.Printf("[Migration] Warning: failed to check schema existence, will attempt template execution: %v", err)
+				schemaExists = false
+			}
 
 			if schemaExists {
 				log.Printf("[Migration] Tenant schema already exists, skipping template")
 			} else {
 				log.Printf("[Migration] Executing tenant base template")
-				content, err := os.ReadFile(templatePath)
-				if err != nil {
-					return fmt.Errorf("failed to read tenant template: %w", err)
-				}
-				if err := mr.executeSQLContent(string(content)); err != nil {
+				if err := mr.executeTemplateFile(templatePath); err != nil {
 					return fmt.Errorf("tenant template execution failed: %w", err)
 				}
 				log.Printf("[Migration] Tenant base template executed successfully")
+
+				// The template is a complete final-state dump — all incremental migrations
+				// are already baked in. Mark them all as executed so the runner skips them.
+				if allFiles, err := mr.LoadMigrationFiles(); err == nil {
+					for _, m := range allFiles {
+						if m.Version > 0 {
+							mr.logMigration(m.Version, m.Name, true, "", 0)
+						}
+					}
+					log.Printf("[Migration] Marked %d incremental migrations as already applied (included in template)", len(allFiles)-1)
+				}
+				return nil
 			}
 		}
 	}
@@ -200,7 +211,7 @@ func (mr *MigrationRunner) RunMigrations() error {
 	executedCount, failedCount := 0, 0
 
 	for _, m := range migrations {
-		if mr.isMigrationExecuted(m.Version) {
+		if mr.isMigrationExecuted(m.Version, m.Name) {
 			log.Printf("[Migration] %s v%d (%s) already applied, skipping", mr.dbType, m.Version, m.Name)
 			continue
 		}
@@ -234,8 +245,9 @@ func (mr *MigrationRunner) RunMigrations() error {
 			mr.logMigration(m.Version, m.Name, true, "", executionMS)
 		} else {
 			failedCount++
-			errMsg := fmt.Sprintf("FAILED after %d attempts: %v", maxRetries, lastErr)
-			log.Printf("[Migration] ERROR: %s v%d %s", mr.dbType, m.Version, errMsg)
+			errMsg := fmt.Sprintf("PANIC: Migration %d (%s) FAILED after %d attempts - %v",
+				m.Version, m.Name, maxRetries, lastErr)
+			log.Printf("[Migration] %s", errMsg)
 			mr.logMigration(m.Version, m.Name, false, errMsg, executionMS)
 		}
 	}
@@ -278,15 +290,40 @@ func (mr *MigrationRunner) executeSQLContent(content string) error {
 	return nil
 }
 
-// isMigrationExecuted returns true if the given version is already recorded as successful.
-func (mr *MigrationRunner) isMigrationExecuted(version int) bool {
-	query := `SELECT COUNT(*) FROM migration_logs WHERE version = $1 AND db_type = $2 AND success = true`
-	args := []interface{}{version, mr.dbType}
+// executeTemplateFile reads and executes a tenant template SQL file with retry logic.
+func (mr *MigrationRunner) executeTemplateFile(templatePath string) error {
+	content, err := os.ReadFile(templatePath)
+	if err != nil {
+		return fmt.Errorf("failed to read template file: %w", err)
+	}
+
+	const maxRetries = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		err := mr.executeSQLContent(string(content))
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		log.Printf("[Migration] Template execution attempt %d/%d failed: %v", attempt, maxRetries, err)
+		if attempt < maxRetries {
+			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+		}
+	}
+	return fmt.Errorf("template execution failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+// isMigrationExecuted returns true if the given version+name combo is already recorded as successful.
+// Using both version and name prevents two files with the same numeric prefix (e.g. from different
+// subdirectories) from incorrectly skipping each other.
+func (mr *MigrationRunner) isMigrationExecuted(version int, name string) bool {
+	query := `SELECT COUNT(*) FROM migration_logs WHERE version = $1 AND name = $2 AND db_type = $3 AND success = true`
+	args := []interface{}{version, name, mr.dbType}
 
 	var queryDB *sql.DB
 	if mr.dbType == "tenant" && mr.masterDB != nil {
 		queryDB = mr.masterDB
-		query += ` AND tenant_id = $3`
+		query += ` AND tenant_id = $4`
 		args = append(args, *mr.tenantID)
 	} else {
 		queryDB = mr.db

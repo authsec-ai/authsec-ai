@@ -658,23 +658,31 @@ func (ctrl *TOTPController) ApproveDeviceCodeWithTOTP(c *gin.Context) {
 		return
 	}
 
-	// Authorize device
-	if err := ctrl.deviceRepo.AuthorizeDeviceCode(req.UserCode, user.ID, user.Email, true); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to approve device", "details": err.Error()})
-		return
-	}
-
-	// Get tenant details
+	// Get tenant details (needed for authorize and token generation)
 	tenant, err := ctrl.tenantRepo.GetTenantByID(user.TenantID.String())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Tenant not found"})
 		return
 	}
 
-	// Generate JWT token
+	// client_id: prefer dc.ClientID, fall back to user's own ClientID
+	var clientID *uuid.UUID
+	if dc.ClientID != nil {
+		clientID = dc.ClientID
+	} else {
+		clientID = &user.ClientID
+	}
+
+	// Generate JWT token before storing (token is stored in device record)
 	token, err := ctrl.generateJWTToken(user, tenant)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token", "details": err.Error()})
+		return
+	}
+
+	// Authorize device with full tenant context and pre-generated token
+	if err := ctrl.deviceRepo.AuthorizeDeviceCode(req.UserCode, user.ID, user.Email, user.TenantID, tenant.TenantDomain, clientID, token, true); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to approve device", "details": err.Error()})
 		return
 	}
 

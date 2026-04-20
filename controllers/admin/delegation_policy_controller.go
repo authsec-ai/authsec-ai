@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -9,9 +10,10 @@ import (
 
 	"github.com/authsec-ai/authsec/config"
 	sharedCtrl "github.com/authsec-ai/authsec/controllers/shared"
+	spiremodels "github.com/authsec-ai/authsec/internal/spire/domain/models"
+	spireservices "github.com/authsec-ai/authsec/internal/spire/services"
 	"github.com/authsec-ai/authsec/middlewares"
 	"github.com/authsec-ai/authsec/models"
-	"github.com/authsec-ai/authsec/services"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -20,13 +22,24 @@ import (
 // which roles can delegate trust to AI agent types.
 // All operations run against the tenant's database.
 type DelegationPolicyController struct {
-	spireService *services.SpireService
+	workloadEntrySvc *spireservices.WorkloadEntryService
+	jwtSvidSvc       *spireservices.JWTSVIDService
+	agentSvc         *spireservices.AgentService
 }
 
 func NewDelegationPolicyController() *DelegationPolicyController {
-	return &DelegationPolicyController{
-		spireService: services.NewSpireService(),
-	}
+	return &DelegationPolicyController{}
+}
+
+// SetServices injects the SPIRE services after bootstrap.
+func (dc *DelegationPolicyController) SetServices(
+	workloadEntrySvc *spireservices.WorkloadEntryService,
+	jwtSvidSvc *spireservices.JWTSVIDService,
+	agentSvc *spireservices.AgentService,
+) {
+	dc.workloadEntrySvc = workloadEntrySvc
+	dc.jwtSvidSvc = jwtSvidSvc
+	dc.agentSvc = agentSvc
 }
 
 // --- Request/Response types ---
@@ -154,55 +167,70 @@ func (dc *DelegationPolicyController) CreateDelegationPolicy(c *gin.Context) {
 			Row().Scan(&spiffeID, &clientType, &agentType)
 
 		if clientType == "ai_agent" {
-			authToken := extractBearerToken(c)
 			resolvedSpiffeID := ""
 
 			if spiffeID == nil || *spiffeID == "" {
-				// Auto-provision: fetch SPIRE agents to get parent_id
-				agents, err := dc.spireService.ListAgents(authToken)
-				if err != nil {
-					log.Printf("[DelegationPolicy] Failed to list SPIRE agents for auto-provision: %v", err)
-					response["identity_provision"] = gin.H{
-						"status": "skipped",
-						"reason": "Could not list SPIRE agents: " + err.Error(),
-					}
-				} else if len(agents) == 0 {
-					response["identity_provision"] = gin.H{
-						"status": "skipped",
-						"reason": "No SPIRE agents available to use as parent",
-					}
-				} else {
-					parentID := agents[0].SpiffeID
-					agentTypeStr := req.AgentType
-					if agentType != nil && *agentType != "" {
-						agentTypeStr = *agentType
-					}
-
-					spireResp, err := dc.spireService.CreateAgentEntry(&services.CreateAgentEntryRequest{
-						TenantID:  tenantID.String(),
-						ClientID:  clientID.String(),
-						AgentType: agentTypeStr,
-						ParentID:  parentID,
-					}, authToken)
+				// Auto-provision via merged service
+				if dc.workloadEntrySvc != nil && dc.agentSvc != nil {
+					agents, err := dc.agentSvc.ListAgentsByTenant(c.Request.Context(), tenantID.String())
 					if err != nil {
-						log.Printf("[DelegationPolicy] Auto-provision failed for agent %s: %v", clientID.String(), err)
+						log.Printf("[DelegationPolicy] Failed to list SPIRE agents for auto-provision: %v", err)
 						response["identity_provision"] = gin.H{
-							"status": "failed",
-							"reason": err.Error(),
+							"status": "skipped",
+							"reason": "Could not list SPIRE agents: " + err.Error(),
+						}
+					} else if len(agents) == 0 {
+						response["identity_provision"] = gin.H{
+							"status": "skipped",
+							"reason": "No SPIRE agents available to use as parent",
 						}
 					} else {
-						tenantDB.Table("clients").
-							Where("client_id = ? AND tenant_id = ?", clientID, tenantID).
-							Update("spiffe_id", spireResp.SpiffeID)
-
-						log.Printf("[DelegationPolicy] Auto-provisioned identity for agent %s: spiffe_id=%s", clientID.String(), spireResp.SpiffeID)
-						response["identity_provision"] = gin.H{
-							"status":    "provisioned",
-							"spiffe_id": spireResp.SpiffeID,
-							"entry_id":  spireResp.EntryID,
-							"parent_id": spireResp.ParentID,
+						parentID := agents[0].SpiffeID
+						agentTypeStr := req.AgentType
+						if agentType != nil && *agentType != "" {
+							agentTypeStr = *agentType
 						}
-						resolvedSpiffeID = spireResp.SpiffeID
+
+						trustDomain := config.AppConfig.SpiffeTrustDomain
+						if trustDomain == "" {
+							trustDomain = "example.org"
+						}
+						newSpiffeID := fmt.Sprintf("spiffe://%s/tenants/%s/agents/%s/%s",
+							trustDomain, tenantID.String(), agentTypeStr, clientID.String())
+
+						entry := &spiremodels.WorkloadEntry{
+							TenantID:  tenantID.String(),
+							SpiffeID:  newSpiffeID,
+							ParentID:  parentID,
+							Selectors: map[string]string{"authsec:client_id": clientID.String(), "authsec:agent_type": agentTypeStr},
+						}
+
+						created, err := dc.workloadEntrySvc.CreateEntry(c.Request.Context(), entry)
+						if err != nil {
+							log.Printf("[DelegationPolicy] Auto-provision failed for agent %s: %v", clientID.String(), err)
+							response["identity_provision"] = gin.H{
+								"status": "failed",
+								"reason": err.Error(),
+							}
+						} else {
+							tenantDB.Table("clients").
+								Where("client_id = ? AND tenant_id = ?", clientID, tenantID).
+								Update("spiffe_id", created.SpiffeID)
+
+							log.Printf("[DelegationPolicy] Auto-provisioned identity for agent %s: spiffe_id=%s", clientID.String(), created.SpiffeID)
+							response["identity_provision"] = gin.H{
+								"status":    "provisioned",
+								"spiffe_id": created.SpiffeID,
+								"entry_id":  created.ID,
+								"parent_id": created.ParentID,
+							}
+							resolvedSpiffeID = created.SpiffeID
+						}
+					}
+				} else {
+					response["identity_provision"] = gin.H{
+						"status": "skipped",
+						"reason": "SPIRE services not initialized",
 					}
 				}
 			} else {
@@ -221,12 +249,16 @@ func (dc *DelegationPolicyController) CreateDelegationPolicy(c *gin.Context) {
 				}
 				ttlDuration := time.Duration(req.MaxTTLSeconds) * time.Second
 
-				// Use the policy we just created directly
 				delegatedPerms := policy.GetAllowedPermissions()
 				if len(delegatedPerms) == 0 {
 					response["delegate_token"] = gin.H{
 						"status": "skipped",
 						"reason": "No permissions in policy",
+					}
+				} else if dc.jwtSvidSvc == nil {
+					response["delegate_token"] = gin.H{
+						"status": "skipped",
+						"reason": "JWT-SVID service not initialized",
 					}
 				} else {
 					emailID := sharedCtrl.ContextStringValue(c, "email_id")
@@ -240,13 +272,13 @@ func (dc *DelegationPolicyController) CreateDelegationPolicy(c *gin.Context) {
 					}
 
 					finalTTL := int(ttlDuration.Seconds())
-					jwtResp, jwtErr := dc.spireService.IssueDelegatedJWTSVID(&services.IssueJWTSVIDRequest{
+					jwtResp, jwtErr := dc.jwtSvidSvc.IssueJWTSVID(c.Request.Context(), &spireservices.IssueJWTSVIDRequest{
 						TenantID:     tenantID.String(),
 						SpiffeID:     resolvedSpiffeID,
 						Audience:     audience,
 						TTL:          finalTTL,
 						CustomClaims: customClaims,
-					}, authToken)
+					})
 					if jwtErr != nil {
 						log.Printf("[DelegationPolicy] Auto-delegate-token failed for agent %s: %v", clientID.String(), jwtErr)
 						response["delegate_token"] = gin.H{

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/big"
@@ -42,6 +43,25 @@ type SpireWorkload struct {
 }
 
 func (SpireWorkload) TableName() string { return "spire_workloads" }
+
+// WorkloadEntry is the GORM model for workload_entries in tenant databases.
+// Stores the full workload registration with selectors, parent_id, and TTL
+// so that SPIRE agents can look up and attest workloads.
+type WorkloadEntry struct {
+	ID           uuid.UUID       `json:"id" gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	TenantID     uuid.UUID       `json:"tenant_id" gorm:"type:uuid;not null"`
+	SpiffeID     string          `json:"spiffe_id" gorm:"type:varchar(512);uniqueIndex;not null"`
+	ParentID     string          `json:"parent_id" gorm:"type:varchar(512);not null"`
+	Selectors    json.RawMessage `json:"selectors" gorm:"type:jsonb;not null"`
+	TTL          int             `json:"ttl" gorm:"default:3600"`
+	Admin        bool            `json:"admin" gorm:"default:false"`
+	Downstream   bool            `json:"downstream" gorm:"default:false"`
+	SpireEntryID *string         `json:"spire_entry_id,omitempty" gorm:"type:varchar(255)"`
+	CreatedAt    time.Time       `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt    time.Time       `json:"updated_at" gorm:"autoUpdateTime"`
+}
+
+func (WorkloadEntry) TableName() string { return "workload_entries" }
 
 // SpireOIDCToken stores OIDC token metadata for revocation tracking.
 type SpireOIDCToken struct {
@@ -281,6 +301,129 @@ type SpireController struct {
 	oidcProvider *spireOIDCProvider
 	policyEngine string
 	trustDomain  string
+}
+
+// sharedSpireController is the singleton used by in-process callers (e.g. clients controller).
+var sharedSpireController *SpireController
+
+// SetSharedSpireController stores the singleton so other controllers can create entries in-process.
+func SetSharedSpireController(sc *SpireController) { sharedSpireController = sc }
+
+// RegisterAgentWorkload creates a SPIRE workload entry for an AI agent.
+// It writes to both the master DB (spire_workloads) and the tenant DB (workload_entries),
+// and optionally creates a SPIRE entry via gRPC if the server is connected.
+// Returns the generated full SPIFFE ID.
+func RegisterAgentWorkload(tenantID, clientID, agentType, platform string, selectors map[string]string) (string, error) {
+	sc := sharedSpireController
+	if sc == nil {
+		return "", fmt.Errorf("SPIRE controller not initialized")
+	}
+
+	spiffeID := fmt.Sprintf("/tenants/%s/agents/%s/%s", tenantID, agentType, clientID)
+	fullSpiffeID := fmt.Sprintf("spiffe://%s%s", sc.trustDomain, spiffeID)
+	parentID := fmt.Sprintf("spiffe://%s/tenants/%s/agent", sc.trustDomain, tenantID)
+
+	// Build SPIRE selectors from the user-supplied key-value pairs
+	var spireSelectors []*typespb.Selector
+	for key, value := range selectors {
+		// Split key like "k8s:ns" into type="k8s" value="ns:<user-value>"
+		// or "k8s:pod-label:app" into type="k8s" value="pod-label:app:<user-value>"
+		parts := strings.SplitN(key, ":", 2)
+		selectorType := parts[0]
+		selectorKey := ""
+		if len(parts) > 1 {
+			selectorKey = parts[1]
+		}
+		spireSelectors = append(spireSelectors, &typespb.Selector{
+			Type:  selectorType,
+			Value: fmt.Sprintf("%s:%s", selectorKey, value),
+		})
+	}
+
+	// Fallback: if no selectors provided, use a default owner-based selector
+	if len(spireSelectors) == 0 {
+		spireSelectors = []*typespb.Selector{
+			{Type: "k8s", Value: fmt.Sprintf("pod-label:owner:%s", clientID)},
+		}
+	}
+
+	// Build selectors JSON for the workload_entries record
+	selectorMap := map[string]string{
+		"authsec:client_id":  clientID,
+		"authsec:agent_type": agentType,
+		"authsec:tenant_id":  tenantID,
+	}
+	for k, v := range selectors {
+		selectorMap[k] = v
+	}
+	selectorsJSON, err := json.Marshal(selectorMap)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal selectors: %w", err)
+	}
+
+	// Save workload record to master DB (spire_workloads)
+	w := SpireWorkload{
+		SpiffeID: spiffeID,
+		Owner:    clientID,
+	}
+	if err := sc.db.Create(&w).Error; err != nil {
+		return "", fmt.Errorf("failed to save workload record: %w", err)
+	}
+
+	// Save workload entry to tenant DB (workload_entries)
+	tenantUUID, err := uuid.Parse(tenantID)
+	if err != nil {
+		return "", fmt.Errorf("invalid tenant_id: %w", err)
+	}
+
+	tenantDB, err := config.GetTenantGORMDB(tenantID)
+	if err != nil {
+		log.Printf("[SPIRE] Warning: failed to connect to tenant DB for workload entry: %v", err)
+		// Continue — master record and gRPC entry are still valuable
+	} else {
+		entry := WorkloadEntry{
+			ID:        uuid.New(),
+			TenantID:  tenantUUID,
+			SpiffeID:  fullSpiffeID,
+			ParentID:  parentID,
+			Selectors: selectorsJSON,
+			TTL:       3600,
+		}
+		if err := tenantDB.Create(&entry).Error; err != nil {
+			log.Printf("[SPIRE] Warning: failed to save workload entry to tenant DB: %v", err)
+			// Continue — don't fail the whole registration
+		} else {
+			log.Printf("[SPIRE] Workload entry saved to tenant DB: id=%s spiffe_id=%s", entry.ID, entry.SpiffeID)
+		}
+	}
+
+	// Create SPIRE entry via gRPC (if server is connected)
+	if sc.entryClient != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		entry := &typespb.Entry{
+			SpiffeId:    &typespb.SPIFFEID{TrustDomain: sc.trustDomain, Path: spiffeID},
+			ParentId:    &typespb.SPIFFEID{TrustDomain: sc.trustDomain, Path: fmt.Sprintf("/tenants/%s/agent", tenantID)},
+			Selectors:   spireSelectors,
+			X509SvidTtl: 3600,
+			StoreSvid:   true,
+		}
+		_, err := sc.entryClient.BatchCreateEntry(ctx, &entryv1.BatchCreateEntryRequest{
+			Entries: []*typespb.Entry{entry},
+		})
+		if err != nil {
+			// Rollback DB records
+			sc.db.Delete(&w)
+			log.Printf("[SPIRE] SPIRE gRPC entry creation failed, rolled back DB records: %v", err)
+			return "", fmt.Errorf("SPIRE entry creation failed: %w", err)
+		}
+	} else {
+		log.Printf("[SPIRE] Warning: SPIRE gRPC entryClient is nil — workload entry saved to DB but not registered with SPIRE server. Set SPIRE_SERVER_ADDR to enable.")
+	}
+
+	log.Printf("[SPIRE] Agent workload registered: spiffe_id=%s tenant=%s client=%s", fullSpiffeID, tenantID, clientID)
+	return fullSpiffeID, nil
 }
 
 // NewSpireController creates and initialises the SPIRE controller.
@@ -1407,32 +1550,18 @@ func (p *spireOIDCProvider) exchangeAWSToken(claims *spireJWTSVIDClaims, req *sp
 	if req.RoleARN == "" {
 		return nil, fmt.Errorf("role_arn is required for AWS token exchange")
 	}
-	// Return mock AWS credentials (production would call STS AssumeRoleWithWebIdentity)
-	return &spireCloudTokenResponse{
-		AccessToken: fmt.Sprintf(`{"access_key_id":"ASIA%s","secret_access_key":"%s","session_token":"%s"}`,
-			uuid.New().String()[:16], uuid.New().String(), uuid.New().String()),
-		TokenType: "AWS-Credentials",
-		ExpiresIn: 3600,
-	}, nil
+	// TODO: Implement STS AssumeRoleWithWebIdentity using the validated JWT-SVID.
+	return nil, fmt.Errorf("AWS cloud token exchange is not yet implemented — configure STS AssumeRoleWithWebIdentity integration")
 }
 
 func (p *spireOIDCProvider) exchangeAzureToken(claims *spireJWTSVIDClaims, req *spireCloudTokenRequest) (*spireCloudTokenResponse, error) {
-	// Return mock Azure token (production would call Azure AD token endpoint)
-	return &spireCloudTokenResponse{
-		AccessToken: "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiI..." + uuid.New().String(),
-		TokenType:   "Bearer",
-		ExpiresIn:   3600,
-	}, nil
+	// TODO: Implement Azure AD confidential client token exchange using the validated JWT-SVID.
+	return nil, fmt.Errorf("Azure cloud token exchange is not yet implemented — configure Azure AD token endpoint integration")
 }
 
 func (p *spireOIDCProvider) exchangeGCPToken(claims *spireJWTSVIDClaims, req *spireCloudTokenRequest) (*spireCloudTokenResponse, error) {
-	// Return mock GCP token (production would call GCP STS token exchange endpoint)
-	return &spireCloudTokenResponse{
-		AccessToken: "ya29." + uuid.New().String(),
-		TokenType:   "Bearer",
-		ExpiresIn:   3600,
-		Scope:       req.Scope,
-	}, nil
+	// TODO: Implement GCP STS token exchange using the validated JWT-SVID.
+	return nil, fmt.Errorf("GCP cloud token exchange is not yet implemented — configure GCP STS endpoint integration")
 }
 
 // ===== HELPERS =====

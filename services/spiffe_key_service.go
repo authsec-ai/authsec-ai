@@ -77,12 +77,14 @@ func newSpiffeKeyService() (*SpiffeKeyService, error) {
 		}
 	} else {
 		// Generate a fresh 2048-bit RSA key in memory.
-		// Note: key rotates on every pod restart — for production persistence use the env var above.
 		var err error
 		privateKey, err = rsa.GenerateKey(rand.Reader, 2048)
 		if err != nil {
 			return nil, fmt.Errorf("generate RSA key: %w", err)
 		}
+		fmt.Println("[WARN] SPIFFE JWT signing key is EPHEMERAL — it will rotate on every pod restart. " +
+			"Set SPIFFE_RSA_PRIVATE_KEY_B64 env var for persistent keys in production. " +
+			"JWKS consumers will see stale keys after restart until they re-fetch.")
 	}
 
 	return &SpiffeKeyService{

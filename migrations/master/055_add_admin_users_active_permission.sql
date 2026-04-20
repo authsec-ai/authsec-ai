@@ -1,0 +1,37 @@
+-- Migration 079: Ensure users resource and active permission exist (modern RBAC schema)
+-- BEGIN; (removed - app manages transactions)
+
+-- System tenant UUID
+DO $$
+DECLARE
+    sys_tenant CONSTANT uuid := '00000000-0000-0000-0000-000000000000';
+BEGIN
+    -- Ensure system tenant exists
+    INSERT INTO tenants (id, tenant_id, name, email, tenant_domain, created_at)
+    VALUES (sys_tenant, sys_tenant, 'System', 'system@authsec.internal', 'system', NOW())
+    ON CONFLICT (id) DO NOTHING;
+
+    -- Ensure users:active permission exists
+    INSERT INTO permissions (id, tenant_id, resource, action, description, created_at)
+    VALUES (
+        gen_random_uuid(),
+        sys_tenant,
+        'users',
+        'active',
+        'Activate/deactivate users',
+        NOW()
+    )
+    ON CONFLICT (tenant_id, resource, action) DO NOTHING;
+
+    -- Link to admin role if present
+    WITH ar AS (
+        SELECT id FROM roles WHERE tenant_id = sys_tenant AND name = 'admin' LIMIT 1
+    ), perm AS (
+        SELECT id FROM permissions WHERE tenant_id = sys_tenant AND resource = 'users' AND action = 'active' LIMIT 1
+    )
+    INSERT INTO role_permissions (role_id, permission_id)
+    SELECT ar.id, perm.id FROM ar, perm
+    ON CONFLICT DO NOTHING;
+END $$;
+
+-- COMMIT; (removed - app manages transactions)

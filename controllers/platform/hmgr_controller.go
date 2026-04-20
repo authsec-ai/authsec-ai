@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/authsec-ai/authsec/config"
@@ -22,6 +23,37 @@ import (
 	"gorm.io/datatypes"
 )
 
+// pkceEntry holds a code verifier with its expiry time.
+type pkceEntry struct {
+	verifier  string
+	expiresAt time.Time
+}
+
+// pkceStore maps state/login_challenge → pkceEntry (TTL: 8 minutes).
+var pkceStore sync.Map
+
+// storePKCEVerifier saves a code verifier associated with a state or login challenge.
+func storePKCEVerifier(key, codeVerifier string) {
+	pkceStore.Store(key, pkceEntry{
+		verifier:  codeVerifier,
+		expiresAt: time.Now().Add(8 * time.Minute),
+	})
+}
+
+// consumePKCEVerifier retrieves and deletes the stored code verifier.
+// Returns an empty string if not found or expired.
+func consumePKCEVerifier(key string) string {
+	val, ok := pkceStore.LoadAndDelete(key)
+	if !ok {
+		return ""
+	}
+	entry := val.(pkceEntry)
+	if time.Now().After(entry.expiresAt) {
+		return ""
+	}
+	return entry.verifier
+}
+
 // HmgrController handles hydra manager authentication requests
 type HmgrController struct {
 	service *hydramodels.OAuthLoginService
@@ -32,6 +64,26 @@ func NewHmgrController(cfg config.Config) *HmgrController {
 	return &HmgrController{
 		service: hydramodels.NewOAuthLoginService(cfg),
 	}
+}
+
+// StorePKCEVerifierHandler pre-registers a PKCE code_verifier from an external client
+// so it can be retrieved at token-exchange time.
+// POST /hmgr/pkce/store  { "state": "...", "code_verifier": "..." }
+func (ctrl *HmgrController) StorePKCEVerifierHandler(c *gin.Context) {
+	var req struct {
+		State        string `json:"state" binding:"required"`
+		CodeVerifier string `json:"code_verifier" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	if len(req.CodeVerifier) < 43 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "code_verifier must be at least 43 characters"})
+		return
+	}
+	storePKCEVerifier(req.State, req.CodeVerifier)
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
 // GetLoginPageDataHandler handles the login page data request
@@ -62,7 +114,7 @@ func (ctrl *HmgrController) GetLoginPageDataHandler(c *gin.Context) {
 		return
 	}
 
-	clientDetails, raw, err := ctrl.service.GetHydraClient(loginRequest.Client.ClientID)
+	clientDetails, _, err := ctrl.service.GetHydraClient(loginRequest.Client.ClientID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, hydramodels.LoginPageDataResponse{
 			Success: false,
@@ -70,7 +122,6 @@ func (ctrl *HmgrController) GetLoginPageDataHandler(c *gin.Context) {
 		})
 		return
 	}
-	log.Print(raw)
 
 	tenantIDForOIDC, _ := clientDetails.Metadata["tenant_id"].(string)
 	realTenantID, _ := clientDetails.Metadata["c_id"].(string)
@@ -135,6 +186,7 @@ func (ctrl *HmgrController) InitiateAuthHandler(c *gin.Context) {
 	var req struct {
 		LoginChallenge string `json:"login_challenge"`
 		OriginDomain   string `json:"origin_domain,omitempty"`
+		CodeVerifier   string `json:"code_verifier,omitempty"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -153,6 +205,12 @@ func (ctrl *HmgrController) InitiateAuthHandler(c *gin.Context) {
 		return
 	}
 
+	// Store the PKCE code_verifier by login_challenge so ExchangeTokenHandler can
+	// retrieve it later.
+	if req.CodeVerifier != "" {
+		storePKCEVerifier(req.LoginChallenge, req.CodeVerifier)
+	}
+
 	loginRequest, err := ctrl.service.GetHydraLoginRequest(req.LoginChallenge)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, hydramodels.AuthInitiateResponse{
@@ -162,7 +220,7 @@ func (ctrl *HmgrController) InitiateAuthHandler(c *gin.Context) {
 		return
 	}
 
-	clientDetails, raw, err := ctrl.service.GetHydraClient(loginRequest.Client.ClientID)
+	clientDetails, _, err := ctrl.service.GetHydraClient(loginRequest.Client.ClientID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, hydramodels.AuthInitiateResponse{
 			Success: false,
@@ -170,7 +228,6 @@ func (ctrl *HmgrController) InitiateAuthHandler(c *gin.Context) {
 		})
 		return
 	}
-	log.Print(raw)
 
 	tenantID, _ := clientDetails.Metadata["tenant_id"].(string)
 	providers, err := ctrl.service.GetOIDCProvidersForTenant(tenantID)
@@ -426,7 +483,22 @@ func (ctrl *HmgrController) ProcessOAuthCallback(code, receivedState string) (st
 
 	userInfo, err := ctrl.service.GetUserInfo(ctx, selectedProvider, accessToken)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to get user info: %w", err)
+		// For Microsoft, fall back to decoding the id_token instead of calling Graph API.
+		// Graph API requires User.Read permission which may not be granted; the id_token
+		// already contains sub/email/name/preferred_username from openid+profile+email scopes.
+		if strings.EqualFold(providerName, "microsoft") || strings.EqualFold(providerName, "azure") {
+			if idToken, ok := tokenResponse["id_token"].(string); ok && idToken != "" {
+				log.Printf("Microsoft Graph userinfo failed (%v), falling back to id_token", err)
+				userInfo, err = extractClaimsFromIDToken(idToken)
+				if err != nil {
+					return "", nil, fmt.Errorf("failed to extract claims from Microsoft id_token: %w", err)
+				}
+			} else {
+				return "", nil, fmt.Errorf("failed to get user info: %w", err)
+			}
+		} else {
+			return "", nil, fmt.Errorf("failed to get user info: %w", err)
+		}
 	}
 
 	user, userID, err := ctrl.ExtractUserFromProviderResponse(providerName, userInfo)
@@ -688,8 +760,21 @@ func (ctrl *HmgrController) ExchangeTokenHandler(c *gin.Context) {
 		return
 	}
 
+	// Retrieve the stored PKCE code_verifier.
+	// Priority order:
+	//   1. Stored by state (GenerateLoginURLHandler path — backend-owned PKCE)
+	//   2. Stored by login_challenge (server-side flows)
+	//   3. Client-supplied in the request body (backward compat while React still owns PKCE)
+	codeVerifier := consumePKCEVerifier(req.State)
+	if codeVerifier == "" {
+		codeVerifier = consumePKCEVerifier(req.LoginChallenge)
+	}
+	if codeVerifier == "" {
+		codeVerifier = req.CodeVerifier
+	}
+
 	ctx := context.Background()
-	tokens, err := ctrl.ExchangeCodeForHydraTokens(ctx, clientID, clientSecret, req.Code, req.RedirectURI)
+	tokens, err := ctrl.ExchangeCodeForHydraTokens(ctx, clientID, clientSecret, req.Code, req.RedirectURI, codeVerifier)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Failed to exchange code for tokens: " + err.Error()})
 		return
@@ -699,7 +784,7 @@ func (ctrl *HmgrController) ExchangeTokenHandler(c *gin.Context) {
 }
 
 // ExchangeCodeForHydraTokens exchanges an authorization code for tokens with Hydra
-func (ctrl *HmgrController) ExchangeCodeForHydraTokens(ctx context.Context, clientID, clientSecret, code, redirectURI string) (*hydramodels.TokenResponse, error) {
+func (ctrl *HmgrController) ExchangeCodeForHydraTokens(ctx context.Context, clientID, clientSecret, code, redirectURI, codeVerifier string) (*hydramodels.TokenResponse, error) {
 	tokenURL := fmt.Sprintf("%s/oauth2/token", config.AppConfig.HydraPublicURL)
 
 	data := url.Values{}
@@ -708,7 +793,9 @@ func (ctrl *HmgrController) ExchangeCodeForHydraTokens(ctx context.Context, clie
 	data.Set("client_id", clientID)
 	data.Set("client_secret", clientSecret)
 	data.Set("redirect_uri", redirectURI)
-	data.Set("code_verifier", "CodVNfCTzCHJqkSDXn4Rr4b8j07H1gb8WLR1VZ-hq9s")
+	if codeVerifier != "" {
+		data.Set("code_verifier", codeVerifier)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
@@ -896,6 +983,13 @@ func (ctrl *HmgrController) GenerateLoginURLHandler(c *gin.Context) {
 	codeVerifier := hydrautils.GenerateCodeVerifier()
 	codeChallenge := hydrautils.GenerateCodeChallenge(codeVerifier)
 
+	// Store code_verifier server-side, keyed by state.
+	// The state value will be echoed back in the exchange-token request, allowing
+	// retrieval at token exchange time without ever exposing the verifier to the client.
+	if req.State != "" {
+		storePKCEVerifier(req.State, codeVerifier)
+	}
+
 	oauthURL := fmt.Sprintf("%s/oauth2/auth?client_id=%s&response_type=code&scope=openid+profile+email&redirect_uri=%s&state=%s&code_challenge=%s&code_challenge_method=S256",
 		config.AppConfig.HydraPublicURL,
 		tenantClientID,
@@ -910,11 +1004,6 @@ func (ctrl *HmgrController) GenerateLoginURLHandler(c *gin.Context) {
 		"oauth_url":        oauthURL,
 		"login_endpoint":   fmt.Sprintf("%s/login", config.AppConfig.BaseURL),
 		"react_login_url":  fmt.Sprintf("%s/oidc/login", config.AppConfig.ReactAppURL),
-		"pkce": map[string]interface{}{
-			"code_verifier":  codeVerifier,
-			"code_challenge": codeChallenge,
-			"method":         "S256",
-		},
 	})
 }
 
@@ -1495,6 +1584,25 @@ func (ctrl *HmgrController) GetProfileHandler(c *gin.Context) {
 }
 func (ctrl *HmgrController) UpdateProfileHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "UpdateProfile endpoint - to be implemented"})
+}
+
+// extractClaimsFromIDToken decodes a JWT id_token without signature verification
+// and returns its claims as a map. Used as a fallback when the userinfo endpoint
+// is unavailable (e.g. Microsoft Graph 403 due to missing User.Read permission).
+func extractClaimsFromIDToken(idToken string) (map[string]interface{}, error) {
+	parts := strings.SplitN(idToken, ".", 3)
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid id_token format")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode id_token payload: %w", err)
+	}
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal id_token claims: %w", err)
+	}
+	return claims, nil
 }
 
 // --- Helper functions ---

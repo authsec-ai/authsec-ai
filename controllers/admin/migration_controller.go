@@ -111,6 +111,43 @@ func (mc *MigrationController) CreateTenantDB(c *gin.Context) {
 		return
 	}
 
+	// Fast path: clone from the golden template if it is ready.
+	if migration.TemplateReady {
+		log.Printf("[MigrationController] Template ready — cloning tenant DB %s from template", dbName)
+
+		cloneStart := time.Now()
+		created, err := migration.CloneTenantDatabase(dbName)
+		cloneDuration := time.Since(cloneStart).Milliseconds()
+		if err != nil {
+			log.Printf("[MigrationController] Template clone failed for %s, falling back to migrations: %v", dbName, err)
+			// Fall through to the migration path below.
+		} else {
+			config.DB.Model(&tenant).Updates(map[string]interface{}{
+				"tenant_db":        dbName,
+				"migration_status": "completed",
+				"updated_at":       time.Now().UTC(),
+			})
+
+			go mc.fixClonedTenantSelfReference(tenant.TenantID.String(), dbName)
+
+			createdAt := time.Time{}
+			if tenant.CreatedAt != nil {
+				createdAt = *tenant.CreatedAt
+			}
+
+			log.Printf("[MigrationController] Tenant DB cloned via create-db: %s (created=%v, duration=%dms)", dbName, created, cloneDuration)
+			c.JSON(http.StatusCreated, migration.CreateTenantDBResponse{
+				TenantID:        tenant.TenantID.String(),
+				DatabaseName:    dbName,
+				MigrationStatus: "completed",
+				CreatedAt:       createdAt,
+				Existed:         !created,
+			})
+			return
+		}
+	}
+
+	// Slow path: create an empty database and run all migrations.
 	cfg := config.AppConfig
 	created, err := migration.CreateDatabase(cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, dbName)
 	if err != nil {
@@ -131,7 +168,7 @@ func (mc *MigrationController) CreateTenantDB(c *gin.Context) {
 		createdAt = *tenant.CreatedAt
 	}
 
-	log.Printf("[MigrationController] Tenant DB setup initiated: %s (created=%v)", dbName, created)
+	log.Printf("[MigrationController] Tenant DB setup initiated (migration path): %s (created=%v)", dbName, created)
 	c.JSON(http.StatusCreated, migration.CreateTenantDBResponse{
 		TenantID:        tenant.TenantID.String(),
 		DatabaseName:    dbName,
