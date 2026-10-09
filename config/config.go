@@ -367,6 +367,7 @@ func LoadConfig() *Config {
 	requiredSecrets := map[string]string{
 		"DB_USER":        dbUser,
 		"DB_PASSWORD":    dbPassword,
+		"JWT_SECRET":     jwtSecret,
 		"JWT_SDK_SECRET": jwtSdkSecret,
 		"JWT_DEF_SECRET": jwtDefSecret,
 	}

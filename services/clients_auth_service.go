@@ -31,7 +31,7 @@ type ClientsAuthService struct {
 func NewClientsAuthService() *ClientsAuthService {
 	secret := os.Getenv("JWT_SDK_SECRET")
 	if secret == "" {
-		secret = "7f9b2a3c8e6d4f1b9a0c3e7d2f5b8a1c9e3d6f2a4b7c8e0d1f9a2b3c"
+		panic("CRITICAL: JWT_SDK_SECRET environment variable is not set. Cannot authenticate requests.")
 	}
 	return &ClientsAuthService{
 		jwtSecret: []byte(secret),

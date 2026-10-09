@@ -115,10 +115,17 @@ The server starts on port **7468** by default.
 
 ## Environment Variables
 
+### Security
+
+`JWT_SECRET`, `JWT_DEF_SECRET`, and `JWT_SDK_SECRET` must be set per deployment. Generate a separate secret for each variable with `openssl rand -base64 48`. Values that appeared in earlier revisions of this repository must never be used. The service refuses to start when a required JWT secret is missing.
+
 ### Required
 
 | Variable | Description | Example |
 | --- | --- | --- |
+| `JWT_SECRET` | Primary JWT signing secret | Generate per deployment |
+| `JWT_DEF_SECRET` | Default JWT signing secret | Generate per deployment |
+| `JWT_SDK_SECRET` | SDK JWT signing secret | Generate per deployment |
 | `DB_NAME` | PostgreSQL database name | `authsec_db` |
 | `DB_USER` | Database username | `authsec` |
 | `DB_PASSWORD` | Database password | `changeme` |
@@ -136,9 +143,6 @@ The server starts on port **7468** by default.
 | `GIN_MODE` | `debug` | Gin run mode (`debug` / `release` / `test`) |
 | `ENVIRONMENT` | `development` | Runtime label used by tenant domain checks (`development` / `production`) |
 | `DB_SCHEMA` | `public` | PostgreSQL schema |
-| `JWT_SECRET` | `""` | Primary JWT signing secret (ext-service routes, SPIFFE delegate) |
-| `JWT_DEF_SECRET` | — | Default JWT signing secret (admin / platform tokens) |
-| `JWT_SDK_SECRET` | — | SDK JWT signing secret |
 | `BASE_URL` | `https://app.authsec.dev` | Base URL for OIDC callbacks and email links |
 | `TENANT_DOMAIN_SUFFIX` | — | Suffix for auto-generated tenant sub-domains |
 | `REDIS_URL` | `""` | Redis connection URL (e.g. `redis://localhost:6379`) |

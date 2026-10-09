@@ -1015,7 +1015,7 @@ func TestAuthMiddleware_WithValidToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	// Use AuthMiddlewareWithConfig so the signing secret matches generateTestJWT()
-	testSecret := "7f9b2a3c8e6d4f1b9a0c3e7d2f5b8a1c9e3d6f2a4b7c8e0d1f9a2b3c"
+	testSecret := "fake-enduser-jwt-secret-for-tests-only"
 	authConfig := &middlewares.AuthConfig{
 		JWTSecret:        testSecret,
 		JWTDefaultSecret: testSecret,
@@ -1123,7 +1123,7 @@ func generateTestJWT() (string, error) {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	secret := []byte("7f9b2a3c8e6d4f1b9a0c3e7d2f5b8a1c9e3d6f2a4b7c8e0d1f9a2b3c")
+	secret := []byte("fake-enduser-jwt-secret-for-tests-only")
 	return token.SignedString(secret)
 }
 
@@ -1132,8 +1132,8 @@ func TestRBAC_AdminOnlyAccess(t *testing.T) {
 
 	// Create auth config with server-side authorization enabled
 	authConfig := &middlewares.AuthConfig{
-		JWTSecret:         "7f9b2a3c8e6d4f1b9a0c3e7d2f5b8a1c9e3d6f2a4b7c8e0d1f9a2b3c",
-		JWTDefaultSecret:  "7f9b2a3c8e6d4f1b9a0c3e7d2f5b8a1c9e3d6f2a4b7c8e0d1f9a2b3c",
+		JWTSecret:         "fake-enduser-jwt-secret-for-tests-only",
+		JWTDefaultSecret:  "fake-enduser-jwt-secret-for-tests-only",
 		ExpectedIssuer:    "authsec-ai/auth-manager",
 		ExpectedAudience:  "authsec-api",
 		RequireServerAuth: true, // Enable server-side authorization
@@ -1167,8 +1167,8 @@ func TestRBAC_UserAccessDenied(t *testing.T) {
 
 	// Create auth config with server-side authorization enabled
 	authConfig := &middlewares.AuthConfig{
-		JWTSecret:         "7f9b2a3c8e6d4f1b9a0c3e7d2f5b8a1c9e3d6f2a4b7c8e0d1f9a2b3c",
-		JWTDefaultSecret:  "7f9b2a3c8e6d4f1b9a0c3e7d2f5b8a1c9e3d6f2a4b7c8e0d1f9a2b3c",
+		JWTSecret:         "fake-enduser-jwt-secret-for-tests-only",
+		JWTDefaultSecret:  "fake-enduser-jwt-secret-for-tests-only",
 		ExpectedIssuer:    "authsec-ai/auth-manager",
 		ExpectedAudience:  "authsec-api",
 		RequireServerAuth: true, // Enable server-side authorization
@@ -1198,8 +1198,8 @@ func TestRBAC_UserAccessGranted(t *testing.T) {
 
 	// Create auth config with server-side authorization enabled
 	authConfig := &middlewares.AuthConfig{
-		JWTSecret:         "7f9b2a3c8e6d4f1b9a0c3e7d2f5b8a1c9e3d6f2a4b7c8e0d1f9a2b3c",
-		JWTDefaultSecret:  "7f9b2a3c8e6d4f1b9a0c3e7d2f5b8a1c9e3d6f2a4b7c8e0d1f9a2b3c",
+		JWTSecret:         "fake-enduser-jwt-secret-for-tests-only",
+		JWTDefaultSecret:  "fake-enduser-jwt-secret-for-tests-only",
 		ExpectedIssuer:    "authsec-ai/auth-manager",
 		ExpectedAudience:  "authsec-api",
 		RequireServerAuth: true, // Enable server-side authorization
@@ -1249,6 +1249,6 @@ func generateTestJWTWithRoles(roles []string) (string, error) {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	secret := []byte("7f9b2a3c8e6d4f1b9a0c3e7d2f5b8a1c9e3d6f2a4b7c8e0d1f9a2b3c")
+	secret := []byte("fake-enduser-jwt-secret-for-tests-only")
 	return token.SignedString(secret)
 }
