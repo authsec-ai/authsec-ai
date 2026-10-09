@@ -92,6 +92,8 @@ authsec is a **single-tenant service by default**. All operations use the master
 
 ### Run locally
 
+Copy `.env.example` to `.env`, then configure the values for your local environment. Replace the `change-me` placeholders before running the service.
+
 ```bash
 # Copy and edit environment variables
 cp .env.example .env
